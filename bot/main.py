@@ -14,6 +14,9 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from db import User, async_session, init_db
+from riot_api import RiotAPIError, get_account_by_riot_id
+
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -32,6 +35,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def on_ready():
     log.info(f"Logged in as {bot.user} (id: {bot.user.id})")
 
+    await init_db()
+    log.info("Database initialized")
+
     if GUILD_ID:
         # Syncing to a specific guild is near-instant, useful while developing.
         guild = discord.Object(id=int(GUILD_ID))
@@ -47,6 +53,51 @@ async def on_ready():
 @bot.tree.command(name="ping", description="Check that the bot is alive")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong! Bot is up and running.")
+
+
+@bot.tree.command(name="register", description="Link your Riot ID to your Discord account")
+@app_commands.describe(
+    game_name="Your Riot ID name (the part before the #)",
+    tag_line="Your Riot ID tag (the part after the #, without the #)",
+)
+async def register(interaction: discord.Interaction, game_name: str, tag_line: str):
+    await interaction.response.defer()
+
+    try:
+        account = await get_account_by_riot_id(game_name, tag_line)
+    except RiotAPIError as e:
+        if e.status_code == 404:
+            await interaction.followup.send(
+                f"No Riot account found for **{game_name}#{tag_line}**. Double-check the spelling and try again."
+            )
+        else:
+            log.error(f"Riot API error during /register: {e}")
+            await interaction.followup.send(
+                "Something went wrong talking to the Riot API. Please try again in a moment."
+            )
+        return
+    except Exception:
+        log.exception("Unexpected error during /register")
+        await interaction.followup.send(
+            "Something unexpected went wrong. Please try again in a moment."
+        )
+        return
+
+    async with async_session() as session:
+        user = await session.get(User, interaction.user.id)
+        if user is None:
+            user = User(discord_id=interaction.user.id)
+            session.add(user)
+
+        user.riot_puuid = account["puuid"]
+        user.riot_game_name = account["gameName"]
+        user.riot_tag_line = account["tagLine"]
+
+        await session.commit()
+
+    await interaction.followup.send(
+        f"You're now tracked as **{account['gameName']} #{account['tagLine']}**."
+    )
 
 
 def main():

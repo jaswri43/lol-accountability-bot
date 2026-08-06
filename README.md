@@ -6,8 +6,9 @@ after a loss, with a `/done` command to mark tasks complete.
 
 ## Status
 
-Phase 1: bot skeleton + `/ping` only. Riot API polling, `/register`, and
-`/done` come next.
+Phase 2: `/ping`, `/register`, and the SQLite database (users, processed
+matches, tasks) are built. `/register` resolves a Riot ID via the Riot API
+and links it to your Discord account. Match polling and `/done` come next.
 
 ## Setup (local dev, VS Code)
 
@@ -47,15 +48,16 @@ Phase 1: bot skeleton + `/ping` only. Riot API polling, `/register`, and
 ```
 lol-accountability-bot/
 ├── bot/
-│   └── main.py          # entry point, bot setup, command registration
+│   ├── main.py           # entry point, bot setup, command registration
+│   ├── db.py              # SQLAlchemy models (users, processed_matches, tasks) + init_db()
+│   └── riot_api.py        # thin async Riot API client (americas routing cluster)
 ├── requirements.txt
-├── .env.example          # template - copy to .env, never commit .env
+├── .env.example           # template - copy to .env, never commit .env
 ├── .gitignore
+├── bot.db                 # SQLite database file, created on first run (gitignored)
 └── README.md
 ```
 
-As we add features, `bot/` will grow into:
-- `bot/cogs/` - grouped command modules (registration, tasks, etc.)
-- `bot/riot_api.py` - Riot API client wrapper
-- `bot/db.py` - database models and session handling
+Still to come:
 - `bot/polling.py` - the background loss-detection loop
+- `/done` command to mark a task complete
