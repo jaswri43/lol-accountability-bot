@@ -6,8 +6,8 @@ reacting with ✅ on the task message.
 
 ## Status
 
-Phase 4: custom task rotation, QoL commands, and reaction-based completion
-are built on top of the core loop.
+Phase 5: task reminders and per-user muting are built on top of the core
+loop.
 
 - `/register` links a Riot ID to a Discord account. A background loop polls
   each registered user's recent **ranked** matches (Solo/Duo + Flex only)
@@ -24,6 +24,13 @@ are built on top of the core loop.
   completion path as `/done`.
 - `/status` shows a user's pending tasks; `/stats` shows total/completed/
   pending counts.
+- A second background loop (`REMINDER_INTERVAL_HOURS` in `bot/polling.py`,
+  currently 3h) reminds users about accountability tasks that have been
+  pending for a while (`MIN_TASK_AGE_HOURS`, currently 2h) and haven't been
+  reminded about recently, bundling multiple pending tasks for the same
+  user into one message.
+- `/mute` / `/unmute` pause or resume loss detection, task creation, and
+  reminders for the caller only -- the other person is unaffected.
 
 ## Setup (local dev, VS Code)
 
@@ -71,7 +78,7 @@ lol-accountability-bot/
 │   ├── main.py            # entry point, bot setup, all slash commands, reaction listener
 │   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks, task_templates) + init_db()
 │   ├── riot_api.py         # thin async Riot API client (americas routing cluster)
-│   ├── polling.py          # background loop: polls ranked matches, flags losses, assigns tasks
+│   ├── polling.py          # background loops: match-polling (losses -> tasks) and task reminders
 │   └── accountability.py   # picks a task per-user from task_templates, with a fallback default
 ├── requirements.txt
 ├── .env.example            # template - copy to .env, never commit .env

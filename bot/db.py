@@ -24,6 +24,7 @@ class User(Base):
     riot_game_name: Mapped[str] = mapped_column(String)
     riot_tag_line: Mapped[str] = mapped_column(String)
     registered_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class ProcessedMatch(Base):
@@ -48,6 +49,7 @@ class Task(Base):
     # Nullable: only set for tasks posted after reaction-based completion was
     # added, and only for tasks that made it into the announce channel.
     message_id: Mapped[int | None] = mapped_column(nullable=True)
+    last_reminded_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class TaskTemplate(Base):
@@ -63,13 +65,16 @@ class TaskTemplate(Base):
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await _migrate_add_message_id(conn)
+        await _add_column_if_missing(conn, "tasks", "message_id", "INTEGER")
+        await _add_column_if_missing(conn, "tasks", "last_reminded_at", "DATETIME")
+        await _add_column_if_missing(conn, "users", "muted", "BOOLEAN DEFAULT 0")
 
 
-async def _migrate_add_message_id(conn) -> None:
+async def _add_column_if_missing(conn, table: str, column: str, column_type: str) -> None:
     """create_all only creates missing tables, not missing columns on tables
-    that already exist -- this adds message_id to a pre-existing tasks table."""
-    result = await conn.execute(text("PRAGMA table_info(tasks)"))
+    that already exist -- this adds a column via ALTER TABLE if it's not there
+    yet, so existing rows in an existing bot.db pick up new fields safely."""
+    result = await conn.execute(text(f"PRAGMA table_info({table})"))
     columns = {row[1] for row in result.fetchall()}
-    if "message_id" not in columns:
-        await conn.execute(text("ALTER TABLE tasks ADD COLUMN message_id INTEGER"))
+    if column not in columns:
+        await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))

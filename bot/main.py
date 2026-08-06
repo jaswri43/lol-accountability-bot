@@ -1,9 +1,10 @@
 """
 LoL Accountability Bot - entry point.
 
-Connects to Discord, registers slash commands (/register, /done, /addtask,
-/mytasks, /removetask, /status, /stats), and starts the background
-match-polling loop that assigns accountability tasks after ranked losses.
+Connects to Discord, registers slash commands (/register, /mute, /unmute,
+/done, /addtask, /mytasks, /removetask, /status, /stats, /help), and starts
+the background loops that assign accountability tasks after ranked losses
+and periodically remind users of ones still pending.
 """
 
 import logging
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 from sqlalchemy import select
 
 from db import Task, TaskTemplate, User, async_session, init_db
-from polling import seed_existing_matches, start_polling
+from polling import seed_existing_matches, start_polling, start_reminders
 from riot_api import RiotAPIError, get_account_by_riot_id
 
 load_dotenv()
@@ -55,6 +56,7 @@ async def on_ready():
 
     if ANNOUNCE_CHANNEL_ID:
         start_polling(bot, int(ANNOUNCE_CHANNEL_ID))
+        start_reminders(bot, int(ANNOUNCE_CHANNEL_ID))
     else:
         log.warning("ANNOUNCE_CHANNEL_ID is not set; match polling will not start")
 
@@ -62,6 +64,47 @@ async def on_ready():
 @bot.tree.command(name="ping", description="Check that the bot is alive")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong! Bot is up and running.")
+
+
+@bot.tree.command(name="help", description="Show how to use the bot and its commands")
+async def help_command(interaction: discord.Interaction):
+    text = (
+        "**LoL Accountability Bot**\n"
+        "Tracks your ranked League of Legends losses and assigns you an accountability "
+        "task each time you lose -- job hunting, workouts, whatever you set up. Complete "
+        "a task with `/done` or by reacting ✅ on its message.\n"
+        "\n"
+        "**Getting started**\n"
+        "`/register game_name tag_line` -- link your Riot ID (e.g. `Yogurt` / `fried` for "
+        "Yogurt#fried). Required before anything else works. Only ranked Solo/Duo and Flex "
+        "losses from *after* you register ever get flagged -- your existing match history "
+        "is never retroactively turned into tasks.\n"
+        "`/mute` / `/unmute` -- pause or resume loss detection and reminders for yourself "
+        "only; the other person keeps getting tracked normally.\n"
+        "\n"
+        "**Customizing your tasks**\n"
+        "`/addtask description` -- add a task to your rotation (e.g. \"Do 20 pushups\").\n"
+        "`/mytasks` -- list your active tasks and their ids.\n"
+        "`/removetask task_id` -- deactivate one of your tasks by id.\n"
+        "Once you have at least one active task, losses always draw from your rotation. "
+        "With none set, losses fall back to a generic default task.\n"
+        "\n"
+        "**Completing a task**\n"
+        "`/done [task_id]` -- mark a task done. Leave `task_id` blank to complete your "
+        "most recent pending task. Or just react ✅ on the task's announcement message "
+        "in the channel -- only the person the task belongs to can complete it that way. "
+        "A pending task left untouched for a while gets an occasional reminder ping in "
+        "the channel.\n"
+        "\n"
+        "**Checking progress**\n"
+        "`/status` -- your currently pending tasks.\n"
+        "`/stats` -- your total/completed/pending counts.\n"
+        "\n"
+        "**Other**\n"
+        "`/ping` -- check the bot is alive.\n"
+        "`/help` -- this message."
+    )
+    await interaction.response.send_message(text, ephemeral=True)
 
 
 @bot.tree.command(name="register", description="Link your Riot ID to your Discord account")
@@ -109,6 +152,37 @@ async def register(interaction: discord.Interaction, game_name: str, tag_line: s
     await interaction.followup.send(
         f"You're now tracked as **{account['gameName']} #{account['tagLine']}**."
     )
+
+
+@bot.tree.command(name="mute", description="Pause loss detection and reminders for yourself")
+async def mute(interaction: discord.Interaction):
+    async with async_session() as session:
+        user = await session.get(User, interaction.user.id)
+        if user is None:
+            await interaction.response.send_message("You need to /register first.", ephemeral=True)
+            return
+
+        user.muted = True
+        await session.commit()
+
+    await interaction.response.send_message(
+        "Muted -- losses won't be tracked and you won't get reminders until you `/unmute`.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="unmute", description="Resume loss detection and reminders for yourself")
+async def unmute(interaction: discord.Interaction):
+    async with async_session() as session:
+        user = await session.get(User, interaction.user.id)
+        if user is None:
+            await interaction.response.send_message("You need to /register first.", ephemeral=True)
+            return
+
+        user.muted = False
+        await session.commit()
+
+    await interaction.response.send_message("Unmuted -- loss tracking is back on.", ephemeral=True)
 
 
 async def _complete_task(session, task: Task) -> None:

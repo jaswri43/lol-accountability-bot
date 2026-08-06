@@ -1,15 +1,19 @@
-"""Background loop that polls each registered user's recent ranked matches
-for losses and assigns an accountability task for each new one found.
+"""Background loops: one polls each registered user's recent ranked matches
+for losses and assigns an accountability task for each new one found; the
+other periodically reminds users about accountability tasks they still
+haven't completed.
 
-processed_matches is what makes this idempotent across poll cycles/restarts:
-a (match_id, discord_id) pair is only ever handled once.
+processed_matches is what makes match-polling idempotent across poll
+cycles/restarts: a (match_id, discord_id) pair is only ever handled once.
+Muted users (users.muted) are skipped entirely by both loops.
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import tasks
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from accountability import pick_task_for_user
 from db import ProcessedMatch, Task, User, async_session
@@ -26,7 +30,15 @@ log = logging.getLogger("bot.polling")
 POLL_INTERVAL_MINUTES = 5
 MATCHES_TO_CHECK = 10
 
+# How often the reminder loop checks for/sends reminders, and (deliberately
+# the same value) how long since a task's last reminder before it's due for
+# another one -- keeps a still-pending task from getting re-pinged every run.
+REMINDER_INTERVAL_HOURS = 3
+# Don't remind about a task until it's been pending at least this long.
+MIN_TASK_AGE_HOURS = 2
+
 _started = False
+_reminders_started = False
 
 
 def start_polling(bot: discord.Client, channel_id: int) -> None:
@@ -40,7 +52,9 @@ def start_polling(bot: discord.Client, channel_id: int) -> None:
     @tasks.loop(minutes=POLL_INTERVAL_MINUTES)
     async def poll_matches():
         async with async_session() as session:
-            users = (await session.execute(select(User))).scalars().all()
+            users = (
+                await session.execute(select(User).where(User.muted.is_(False)))
+            ).scalars().all()
 
         for user in users:
             await _check_user(bot, channel_id, user)
@@ -51,6 +65,67 @@ def start_polling(bot: discord.Client, channel_id: int) -> None:
 
     poll_matches.start()
     log.info(f"Started match-polling loop (every {POLL_INTERVAL_MINUTES}m)")
+
+
+def start_reminders(bot: discord.Client, channel_id: int) -> None:
+    """Start the task-reminder loop. Safe to call more than once -- only
+    starts it the first time, same as start_polling."""
+    global _reminders_started
+    if _reminders_started:
+        return
+    _reminders_started = True
+
+    @tasks.loop(hours=REMINDER_INTERVAL_HOURS)
+    async def send_reminders():
+        await _send_reminders(bot, channel_id)
+
+    @send_reminders.before_loop
+    async def before_reminders():
+        await bot.wait_until_ready()
+
+    send_reminders.start()
+    log.info(f"Started task-reminder loop (every {REMINDER_INTERVAL_HOURS}h)")
+
+
+async def _send_reminders(bot: discord.Client, channel_id: int) -> None:
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        log.error(f"Announce channel {channel_id} not found/accessible; skipping reminders")
+        return
+
+    now = datetime.now(timezone.utc)
+    task_cutoff = now - timedelta(hours=MIN_TASK_AGE_HOURS)
+    reminder_cutoff = now - timedelta(hours=REMINDER_INTERVAL_HOURS)
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task)
+            .join(User, User.discord_id == Task.discord_id)
+            .where(
+                Task.status == "pending",
+                Task.created_at <= task_cutoff,
+                User.muted.is_(False),
+                or_(Task.last_reminded_at.is_(None), Task.last_reminded_at <= reminder_cutoff),
+            )
+        )
+        due_tasks = result.scalars().all()
+        if not due_tasks:
+            return
+
+        by_user: dict[int, list[Task]] = {}
+        for task in due_tasks:
+            by_user.setdefault(task.discord_id, []).append(task)
+
+        for discord_id, tasks_for_user in by_user.items():
+            lines = "\n".join(f"- #{t.id}: {t.task_description}" for t in tasks_for_user)
+            await channel.send(
+                f"<@{discord_id}> reminder: you still have {len(tasks_for_user)} pending "
+                f"accountability task(s):\n{lines}"
+            )
+            for task in tasks_for_user:
+                task.last_reminded_at = now
+
+        await session.commit()
 
 
 async def seed_existing_matches(user: User) -> None:
