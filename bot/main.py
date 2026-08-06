@@ -296,14 +296,19 @@ async def status(interaction: discord.Interaction):
         pending = result.scalars().all()
 
     if not pending:
-        await interaction.response.send_message("You have no pending accountability tasks. \U0001f389", ephemeral=True)
+        embed = discord.Embed(
+            description="You have no pending accountability tasks. \U0001f389",
+            color=discord.Color.green(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    lines = [
+    lines = "\n".join(
         f"#{t.id}: **{t.task_description}** (assigned {t.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
         for t in pending
-    ]
-    await interaction.response.send_message("Your pending tasks:\n" + "\n".join(lines), ephemeral=True)
+    )
+    embed = discord.Embed(title="Pending Tasks", description=lines, color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="stats", description="Show your accountability task completion counts")
@@ -316,10 +321,11 @@ async def stats(interaction: discord.Interaction):
     completed = sum(1 for t in all_tasks if t.status == "done")
     pending = sum(1 for t in all_tasks if t.status == "pending")
 
-    await interaction.response.send_message(
-        f"**Your stats**\nTotal tasks: {total}\nCompleted: {completed}\nPending: {pending}",
-        ephemeral=True,
-    )
+    embed = discord.Embed(title="Your Stats", color=discord.Color.blurple())
+    embed.add_field(name="Total", value=str(total))
+    embed.add_field(name="Completed", value=str(completed))
+    embed.add_field(name="Pending", value=str(pending))
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.event

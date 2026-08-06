@@ -6,8 +6,8 @@ reacting with ✅ on the task message.
 
 ## Status
 
-Phase 5: task reminders and per-user muting are built on top of the core
-loop.
+Phase 6: loss/reminder messages are Discord embeds, and loss announcements
+have a tone that escalates with the user's current losing streak.
 
 - `/register` links a Riot ID to a Discord account. A background loop polls
   each registered user's recent **ranked** matches (Solo/Duo + Flex only)
@@ -23,7 +23,8 @@ loop.
   completes the task (only for the user it belongs to) via the same
   completion path as `/done`.
 - `/status` shows a user's pending tasks; `/stats` shows total/completed/
-  pending counts.
+  pending counts. Both, plus the loss and reminder announcements, are
+  Discord embeds now instead of plain text.
 - A second background loop (`REMINDER_INTERVAL_HOURS` in `bot/polling.py`,
   currently 3h) reminds users about accountability tasks that have been
   pending for a while (`MIN_TASK_AGE_HOURS`, currently 2h) and haven't been
@@ -31,6 +32,10 @@ loop.
   user into one message.
 - `/mute` / `/unmute` pause or resume loss detection, task creation, and
   reminders for the caller only -- the other person is unaffected.
+- Loss announcements read the user's current consecutive-loss streak
+  (`bot/tone.py`, based on `processed_matches`) and pick wording/embed
+  color that escalates at 1, 2-3, and 4+ in a row -- tone only, never
+  affects which task gets assigned or how hard it is.
 
 ## Setup (local dev, VS Code)
 
@@ -79,7 +84,8 @@ lol-accountability-bot/
 │   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks, task_templates) + init_db()
 │   ├── riot_api.py         # thin async Riot API client (americas routing cluster)
 │   ├── polling.py          # background loops: match-polling (losses -> tasks) and task reminders
-│   └── accountability.py   # picks a task per-user from task_templates, with a fallback default
+│   ├── accountability.py   # picks a task per-user from task_templates, with a fallback default
+│   └── tone.py              # picks loss-message wording/embed color based on losing-streak length
 ├── requirements.txt
 ├── .env.example            # template - copy to .env, never commit .env
 ├── .gitignore

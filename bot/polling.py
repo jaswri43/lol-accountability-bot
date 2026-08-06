@@ -24,6 +24,7 @@ from riot_api import (
     get_match_details,
     get_match_ids_by_puuid,
 )
+from tone import pick_color, pick_intro
 
 log = logging.getLogger("bot.polling")
 
@@ -118,10 +119,13 @@ async def _send_reminders(bot: discord.Client, channel_id: int) -> None:
 
         for discord_id, tasks_for_user in by_user.items():
             lines = "\n".join(f"- #{t.id}: {t.task_description}" for t in tasks_for_user)
-            await channel.send(
-                f"<@{discord_id}> reminder: you still have {len(tasks_for_user)} pending "
-                f"accountability task(s):\n{lines}"
+            embed = discord.Embed(
+                title="Task Reminder",
+                description=f"You still have {len(tasks_for_user)} pending accountability task(s):\n{lines}",
+                color=discord.Color.gold(),
             )
+            embed.set_footer(text="Mark one done with /done or by reacting ✅ on its original message.")
+            await channel.send(content=f"<@{discord_id}>", embed=embed)
             for task in tasks_for_user:
                 task.last_reminded_at = now
 
@@ -194,11 +198,37 @@ async def _check_user(bot: discord.Client, channel_id: int, user: User) -> None:
         await session.commit()
 
 
+def _match_chronological_key(match_id: str) -> int:
+    """Riot match ids are '{platformId}_{gameId}'; gameId increases
+    monotonically per platform, giving a reliable recency ordering that
+    doesn't depend on the order matches happened to be fetched/inserted in
+    (which can vary when several new matches are found in one poll cycle)."""
+    return int(match_id.rsplit("_", 1)[1])
+
+
+async def _get_current_loss_streak(session, discord_id: int) -> int:
+    """How many of the user's most recent ranked games in a row were losses,
+    stopping at the first win or the start of their recorded history."""
+    result = await session.execute(select(ProcessedMatch).where(ProcessedMatch.discord_id == discord_id))
+    matches = sorted(
+        result.scalars().all(), key=lambda m: _match_chronological_key(m.match_id), reverse=True
+    )
+
+    streak = 0
+    for match in matches:
+        if not match.was_loss:
+            break
+        streak += 1
+    return streak
+
+
 async def _assign_task(session, bot: discord.Client, channel_id: int, user: User, match_id: str) -> None:
     description, used_fallback = await pick_task_for_user(session, user.discord_id)
     task = Task(discord_id=user.discord_id, match_id=match_id, task_description=description)
     session.add(task)
-    await session.flush()  # populate task.id before we reference it in the message
+    await session.flush()  # populate task.id (and let the streak query below see this match)
+
+    streak = await _get_current_loss_streak(session, user.discord_id)
 
     channel = bot.get_channel(channel_id)
     if channel is None:
@@ -206,12 +236,20 @@ async def _assign_task(session, bot: discord.Client, channel_id: int, user: User
         return
 
     fallback_note = (
-        "\n(No custom tasks set for you yet -- use `/addtask` to customize this.)" if used_fallback else ""
+        "\n*(No custom tasks set for you yet -- use `/addtask` to customize this.)*" if used_fallback else ""
     )
-    message = await channel.send(
-        f"<@{user.discord_id}> took a ranked loss. Accountability task (#{task.id}): **{description}**\n"
-        f"Mark it done with `/done task_id:{task.id}` or by reacting with ✅ below.{fallback_note}"
+    embed = discord.Embed(
+        title="Ranked Loss",
+        description=(
+            f"{pick_intro(streak)}\n\n"
+            f"**Task #{task.id}:** {description}\n\n"
+            f"Mark it done with `/done task_id:{task.id}` or by reacting with ✅ below.{fallback_note}"
+        ),
+        color=pick_color(streak),
     )
+    embed.set_footer(text=f"Current streak: {streak} loss{'es' if streak != 1 else ''}")
+
+    message = await channel.send(content=f"<@{user.discord_id}>", embed=embed)
     task.message_id = message.id
 
     try:
