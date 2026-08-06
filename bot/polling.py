@@ -11,7 +11,7 @@ import discord
 from discord.ext import tasks
 from sqlalchemy import select
 
-from accountability import random_task
+from accountability import pick_task_for_user
 from db import ProcessedMatch, Task, User, async_session
 from riot_api import (
     RANKED_QUEUE_IDS,
@@ -120,7 +120,7 @@ async def _check_user(bot: discord.Client, channel_id: int, user: User) -> None:
 
 
 async def _assign_task(session, bot: discord.Client, channel_id: int, user: User, match_id: str) -> None:
-    description = random_task()
+    description, used_fallback = await pick_task_for_user(session, user.discord_id)
     task = Task(discord_id=user.discord_id, match_id=match_id, task_description=description)
     session.add(task)
     await session.flush()  # populate task.id before we reference it in the message
@@ -130,7 +130,16 @@ async def _assign_task(session, bot: discord.Client, channel_id: int, user: User
         log.error(f"Announce channel {channel_id} not found/accessible; task #{task.id} created but not posted")
         return
 
-    await channel.send(
-        f"<@{user.discord_id}> took a ranked loss. Accountability task (#{task.id}): **{description}**\n"
-        f"Mark it done with `/done task_id:{task.id}`"
+    fallback_note = (
+        "\n(No custom tasks set for you yet -- use `/addtask` to customize this.)" if used_fallback else ""
     )
+    message = await channel.send(
+        f"<@{user.discord_id}> took a ranked loss. Accountability task (#{task.id}): **{description}**\n"
+        f"Mark it done with `/done task_id:{task.id}` or by reacting with ✅ below.{fallback_note}"
+    )
+    task.message_id = message.id
+
+    try:
+        await message.add_reaction("✅")
+    except discord.HTTPException:
+        log.error(f"Failed to add checkmark reaction to task #{task.id} message")

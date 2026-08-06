@@ -1,9 +1,9 @@
 """
 LoL Accountability Bot - entry point.
 
-For now this just connects to Discord and registers a /ping command
-so we can confirm the deployment pipeline (code -> running bot -> visible
-in Discord) works before adding Riot API / database logic.
+Connects to Discord, registers slash commands (/register, /done, /addtask,
+/mytasks, /removetask, /status, /stats), and starts the background
+match-polling loop that assigns accountability tasks after ranked losses.
 """
 
 import logging
@@ -16,7 +16,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from sqlalchemy import select
 
-from db import Task, User, async_session, init_db
+from db import Task, TaskTemplate, User, async_session, init_db
 from polling import seed_existing_matches, start_polling
 from riot_api import RiotAPIError, get_account_by_riot_id
 
@@ -111,6 +111,13 @@ async def register(interaction: discord.Interaction, game_name: str, tag_line: s
     )
 
 
+async def _complete_task(session, task: Task) -> None:
+    """Shared by /done and the ✅-reaction listener so completion is defined
+    in exactly one place."""
+    task.status = "done"
+    task.completed_at = datetime.now(timezone.utc)
+
+
 @bot.tree.command(name="done", description="Mark an accountability task as complete")
 @app_commands.describe(
     task_id="The task ID from the reminder message. Leave blank to mark your most recent pending task done."
@@ -143,11 +150,125 @@ async def done(interaction: discord.Interaction, task_id: int | None = None):
             )
             return
 
-        task.status = "done"
-        task.completed_at = datetime.now(timezone.utc)
+        await _complete_task(session, task)
         await session.commit()
 
     await interaction.response.send_message(f"Task #{task.id} marked done: **{task.task_description}**")
+
+
+@bot.tree.command(name="addtask", description="Add a custom accountability task to your rotation")
+@app_commands.describe(description="What you'll do when you lose a ranked game")
+async def addtask(interaction: discord.Interaction, description: str):
+    async with async_session() as session:
+        user = await session.get(User, interaction.user.id)
+        if user is None:
+            await interaction.response.send_message(
+                "You need to /register first before adding tasks.", ephemeral=True
+            )
+            return
+
+        template = TaskTemplate(discord_id=interaction.user.id, description=description)
+        session.add(template)
+        await session.commit()
+
+    await interaction.response.send_message(f"Added task #{template.id}: **{description}**")
+
+
+@bot.tree.command(name="mytasks", description="List your active accountability task templates")
+async def mytasks(interaction: discord.Interaction):
+    async with async_session() as session:
+        result = await session.execute(
+            select(TaskTemplate)
+            .where(TaskTemplate.discord_id == interaction.user.id, TaskTemplate.active.is_(True))
+            .order_by(TaskTemplate.id)
+        )
+        templates = result.scalars().all()
+
+    if not templates:
+        await interaction.response.send_message(
+            "You don't have any custom tasks yet. Add one with `/addtask`.", ephemeral=True
+        )
+        return
+
+    lines = [f"#{t.id}: {t.description}" for t in templates]
+    await interaction.response.send_message("Your active tasks:\n" + "\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="removetask", description="Deactivate one of your custom accountability tasks")
+@app_commands.describe(task_id="The task template id shown in /mytasks")
+async def removetask(interaction: discord.Interaction, task_id: int):
+    async with async_session() as session:
+        template = await session.get(TaskTemplate, task_id)
+        if template is None or template.discord_id != interaction.user.id:
+            await interaction.response.send_message(
+                f"No task template #{task_id} found for you.", ephemeral=True
+            )
+            return
+
+        template.active = False
+        await session.commit()
+
+    await interaction.response.send_message(f"Removed task #{task_id}: **{template.description}**")
+
+
+@bot.tree.command(name="status", description="Show your currently pending accountability tasks")
+async def status(interaction: discord.Interaction):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task)
+            .where(Task.discord_id == interaction.user.id, Task.status == "pending")
+            .order_by(Task.created_at)
+        )
+        pending = result.scalars().all()
+
+    if not pending:
+        await interaction.response.send_message("You have no pending accountability tasks. \U0001f389", ephemeral=True)
+        return
+
+    lines = [
+        f"#{t.id}: **{t.task_description}** (assigned {t.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
+        for t in pending
+    ]
+    await interaction.response.send_message("Your pending tasks:\n" + "\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="stats", description="Show your accountability task completion counts")
+async def stats(interaction: discord.Interaction):
+    async with async_session() as session:
+        result = await session.execute(select(Task).where(Task.discord_id == interaction.user.id))
+        all_tasks = result.scalars().all()
+
+    total = len(all_tasks)
+    completed = sum(1 for t in all_tasks if t.status == "done")
+    pending = sum(1 for t in all_tasks if t.status == "pending")
+
+    await interaction.response.send_message(
+        f"**Your stats**\nTotal tasks: {total}\nCompleted: {completed}\nPending: {pending}",
+        ephemeral=True,
+    )
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if bot.user is not None and payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) != "✅":
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(Task).where(Task.message_id == payload.message_id))
+        task = result.scalars().first()
+        if task is None or task.discord_id != payload.user_id or task.status != "pending":
+            return
+
+        await _complete_task(session, task)
+        await session.commit()
+
+    channel = bot.get_channel(payload.channel_id)
+    if channel is not None:
+        await channel.send(
+            f"<@{payload.user_id}> marked task #{task.id} done via reaction: **{task.task_description}**"
+        )
 
 
 def main():

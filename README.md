@@ -1,16 +1,29 @@
 # LoL Accountability Bot
 
 Discord bot that tracks League of Legends losses (via the Riot API) and
-assigns accountability tasks (job applications, cold emails, small workouts)
-after a loss, with a `/done` command to mark tasks complete.
+assigns accountability tasks after a loss, completable via `/done` or by
+reacting with ✅ on the task message.
 
 ## Status
 
-Phase 3: the full accountability loop is built. `/register` links a Riot ID
-to a Discord account; a background loop polls each registered user's recent
-**ranked** matches (Solo/Duo + Flex only) every 5 minutes, and on a new loss
-posts an accountability task to `ANNOUNCE_CHANNEL_ID`. `/done` marks a task
-complete. `processed_matches` makes polling idempotent across restarts.
+Phase 4: custom task rotation, QoL commands, and reaction-based completion
+are built on top of the core loop.
+
+- `/register` links a Riot ID to a Discord account. A background loop polls
+  each registered user's recent **ranked** matches (Solo/Duo + Flex only)
+  every 5 minutes; `processed_matches` makes this idempotent across
+  restarts, and newly-registered users have their existing match history
+  seeded (not retroactively flagged) so only losses from registration
+  onward get a task.
+- `/addtask <description>`, `/mytasks`, `/removetask <task_id>` manage a
+  per-user rotation of custom task descriptions (`task_templates`). On a
+  loss, one active template is picked at random; if a user hasn't added
+  any, it falls back to a generic default and says so.
+- Each task message gets a ✅ reaction from the bot. Reacting with ✅
+  completes the task (only for the user it belongs to) via the same
+  completion path as `/done`.
+- `/status` shows a user's pending tasks; `/stats` shows total/completed/
+  pending counts.
 
 ## Setup (local dev, VS Code)
 
@@ -55,11 +68,11 @@ complete. `processed_matches` makes polling idempotent across restarts.
 ```
 lol-accountability-bot/
 ├── bot/
-│   ├── main.py            # entry point, bot setup, command registration (/ping, /register, /done)
-│   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks) + init_db()
+│   ├── main.py            # entry point, bot setup, all slash commands, reaction listener
+│   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks, task_templates) + init_db()
 │   ├── riot_api.py         # thin async Riot API client (americas routing cluster)
 │   ├── polling.py          # background loop: polls ranked matches, flags losses, assigns tasks
-│   └── accountability.py   # pool of accountability task descriptions
+│   └── accountability.py   # picks a task per-user from task_templates, with a fallback default
 ├── requirements.txt
 ├── .env.example            # template - copy to .env, never commit .env
 ├── .gitignore
