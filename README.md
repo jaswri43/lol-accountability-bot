@@ -6,9 +6,11 @@ after a loss, with a `/done` command to mark tasks complete.
 
 ## Status
 
-Phase 2: `/ping`, `/register`, and the SQLite database (users, processed
-matches, tasks) are built. `/register` resolves a Riot ID via the Riot API
-and links it to your Discord account. Match polling and `/done` come next.
+Phase 3: the full accountability loop is built. `/register` links a Riot ID
+to a Discord account; a background loop polls each registered user's recent
+**ranked** matches (Solo/Duo + Flex only) every 5 minutes, and on a new loss
+posts an accountability task to `ANNOUNCE_CHANNEL_ID`. `/done` marks a task
+complete. `processed_matches` makes polling idempotent across restarts.
 
 ## Setup (local dev, VS Code)
 
@@ -33,8 +35,13 @@ and links it to your Discord account. Match polling and `/done` come next.
    cp .env.example .env
    ```
    Then open `.env` and fill in your real `DISCORD_TOKEN` (and `GUILD_ID`
-   for fast command syncing during dev). Never commit `.env` — it's
-   already in `.gitignore`.
+   for fast command syncing during dev), `RIOT_API_KEY` (from the
+   [Riot Developer Portal](https://developer.riotgames.com/) — dev keys
+   expire every 24h, just regenerate as needed), and `ANNOUNCE_CHANNEL_ID`
+   (the channel loss/task messages get posted to — right-click it in
+   Discord with Developer Mode on -> Copy Channel ID). Without
+   `ANNOUNCE_CHANNEL_ID` set, the bot still runs but match polling won't
+   start. Never commit `.env` — it's already in `.gitignore`.
 
 5. **Run the bot:**
    ```bash
@@ -48,16 +55,14 @@ and links it to your Discord account. Match polling and `/done` come next.
 ```
 lol-accountability-bot/
 ├── bot/
-│   ├── main.py           # entry point, bot setup, command registration
-│   ├── db.py              # SQLAlchemy models (users, processed_matches, tasks) + init_db()
-│   └── riot_api.py        # thin async Riot API client (americas routing cluster)
+│   ├── main.py            # entry point, bot setup, command registration (/ping, /register, /done)
+│   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks) + init_db()
+│   ├── riot_api.py         # thin async Riot API client (americas routing cluster)
+│   ├── polling.py          # background loop: polls ranked matches, flags losses, assigns tasks
+│   └── accountability.py   # pool of accountability task descriptions
 ├── requirements.txt
-├── .env.example           # template - copy to .env, never commit .env
+├── .env.example            # template - copy to .env, never commit .env
 ├── .gitignore
-├── bot.db                 # SQLite database file, created on first run (gitignored)
+├── bot.db                  # SQLite database file, created on first run (gitignored)
 └── README.md
 ```
-
-Still to come:
-- `bot/polling.py` - the background loss-detection loop
-- `/done` command to mark a task complete

@@ -8,19 +8,23 @@ in Discord) works before adding Riot API / database logic.
 
 import logging
 import os
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from sqlalchemy import select
 
-from db import User, async_session, init_db
+from db import Task, User, async_session, init_db
+from polling import seed_existing_matches, start_polling
 from riot_api import RiotAPIError, get_account_by_riot_id
 
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")  # optional: set this for instant command sync during dev
+ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")  # where loss/task messages get posted
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
@@ -48,6 +52,11 @@ async def on_ready():
         # Global sync can take up to an hour to propagate the first time.
         synced = await bot.tree.sync()
         log.info(f"Synced {len(synced)} command(s) globally")
+
+    if ANNOUNCE_CHANNEL_ID:
+        start_polling(bot, int(ANNOUNCE_CHANNEL_ID))
+    else:
+        log.warning("ANNOUNCE_CHANNEL_ID is not set; match polling will not start")
 
 
 @bot.tree.command(name="ping", description="Check that the bot is alive")
@@ -95,9 +104,50 @@ async def register(interaction: discord.Interaction, game_name: str, tag_line: s
 
         await session.commit()
 
+    await seed_existing_matches(user)
+
     await interaction.followup.send(
         f"You're now tracked as **{account['gameName']} #{account['tagLine']}**."
     )
+
+
+@bot.tree.command(name="done", description="Mark an accountability task as complete")
+@app_commands.describe(
+    task_id="The task ID from the reminder message. Leave blank to mark your most recent pending task done."
+)
+async def done(interaction: discord.Interaction, task_id: int | None = None):
+    async with async_session() as session:
+        if task_id is not None:
+            task = await session.get(Task, task_id)
+            if task is None or task.discord_id != interaction.user.id:
+                await interaction.response.send_message(
+                    f"No task #{task_id} found for you.", ephemeral=True
+                )
+                return
+        else:
+            result = await session.execute(
+                select(Task)
+                .where(Task.discord_id == interaction.user.id, Task.status == "pending")
+                .order_by(Task.created_at.desc())
+            )
+            task = result.scalars().first()
+            if task is None:
+                await interaction.response.send_message(
+                    "You don't have any pending accountability tasks.", ephemeral=True
+                )
+                return
+
+        if task.status != "pending":
+            await interaction.response.send_message(
+                f"Task #{task.id} is already marked **{task.status}**.", ephemeral=True
+            )
+            return
+
+        task.status = "done"
+        task.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    await interaction.response.send_message(f"Task #{task.id} marked done: **{task.task_description}**")
 
 
 def main():

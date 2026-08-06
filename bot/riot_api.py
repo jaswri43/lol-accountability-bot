@@ -14,6 +14,11 @@ import httpx
 
 REGIONAL_ROUTE = "https://americas.api.riotgames.com"
 
+# https://static.developer.riotgames.com/docs/lol/queues.json
+RANKED_SOLO_QUEUE_ID = 420
+RANKED_FLEX_QUEUE_ID = 440
+RANKED_QUEUE_IDS = {RANKED_SOLO_QUEUE_ID, RANKED_FLEX_QUEUE_ID}
+
 
 class RiotAPIError(Exception):
     def __init__(self, status_code: int, message: str):
@@ -47,10 +52,19 @@ async def get_account_by_riot_id(game_name: str, tag_line: str) -> dict:
     return await _get(url)
 
 
-async def get_match_ids_by_puuid(puuid: str, count: int = 5) -> list[str]:
-    """Return the player's most recent match IDs, newest first."""
+async def get_match_ids_by_puuid(puuid: str, count: int = 5, queue_type: str | None = None) -> list[str]:
+    """Return the player's most recent match IDs, newest first.
+
+    queue_type filters server-side, e.g. "ranked" to exclude normals/ARAM/etc.
+    It still mixes Ranked Solo/Duo and Ranked Flex together, so callers that
+    care about the distinction should also check `info.queueId` on the match
+    details against RANKED_QUEUE_IDS.
+    """
+    params = {"count": count}
+    if queue_type is not None:
+        params["type"] = queue_type
     url = f"{REGIONAL_ROUTE}/lol/match/v5/matches/by-puuid/{puuid}/ids"
-    return await _get(url, params={"count": count})
+    return await _get(url, params=params)
 
 
 async def get_match_details(match_id: str) -> dict:
