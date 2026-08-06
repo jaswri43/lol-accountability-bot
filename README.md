@@ -6,6 +6,14 @@ reacting with ✅ on the task message.
 
 ## Status
 
+**Live**, running unattended on an Oracle Cloud VM under systemd (see
+Deployment below).
+
+Phase 7: production-readiness and deployment. Logging goes to stdout and a
+rotating file (`bot/logs/bot.log`, 5MB x 3 backups); both background loops
+(`bot/polling.py`) catch and log unexpected exceptions instead of dying
+silently, so a bug in one poll cycle doesn't permanently kill the loop.
+
 Phase 6: loss/reminder messages are Discord embeds, and loss announcements
 have a tone that escalates with the user's current losing streak.
 
@@ -127,5 +135,6 @@ lol-accountability-bot/
 ├── .env.example            # template - copy to .env, never commit .env
 ├── .gitignore
 ├── bot.db                  # SQLite database file, created on first run (gitignored)
+├── backups/                 # daily bot.db backups from deploy/backup_db.sh (gitignored)
 └── README.md
 ```
