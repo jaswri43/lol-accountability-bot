@@ -75,6 +75,39 @@ have a tone that escalates with the user's current losing streak.
    You should see a "Logged in as ..." log line. In your Discord server,
    try `/ping` — the bot should reply "Pong! Bot is up and running."
 
+## Deployment (Linux VM, systemd)
+
+For running unattended long-term (e.g. an Oracle Cloud VM). See
+`deploy/lol-accountability-bot.service` (systemd unit -- auto-restarts on
+failure, starts on boot) and `deploy/backup_db.sh` (daily `bot.db` backup,
+keeps the last 7). Logs go to both stdout (captured by `journalctl`) and a
+rotating file at `bot/logs/bot.log` (5MB x 3 backups).
+
+1. Clone the repo onto the VM and repeat the local-dev setup steps above
+   (venv, `pip install -r requirements.txt`, `.env`) inside it.
+2. Edit `deploy/lol-accountability-bot.service`: adjust `User=`/`Group=`
+   and the two `/home/ubuntu/lol-accountability-bot` paths to match your
+   actual username and clone location.
+3. Install and start the service:
+   ```bash
+   sudo cp deploy/lol-accountability-bot.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable lol-accountability-bot
+   sudo systemctl start lol-accountability-bot
+   ```
+4. Check it's running:
+   ```bash
+   sudo systemctl status lol-accountability-bot
+   journalctl -u lol-accountability-bot -f
+   ```
+5. Schedule daily backups:
+   ```bash
+   chmod +x deploy/backup_db.sh
+   crontab -e
+   # add:
+   0 3 * * * /home/ubuntu/lol-accountability-bot/deploy/backup_db.sh >> /home/ubuntu/lol-accountability-bot/backups/backup.log 2>&1
+   ```
+
 ## Project layout
 
 ```
@@ -85,7 +118,11 @@ lol-accountability-bot/
 │   ├── riot_api.py         # thin async Riot API client (americas routing cluster)
 │   ├── polling.py          # background loops: match-polling (losses -> tasks) and task reminders
 │   ├── accountability.py   # picks a task per-user from task_templates, with a fallback default
-│   └── tone.py              # picks loss-message wording/embed color based on losing-streak length
+│   ├── tone.py              # picks loss-message wording/embed color based on losing-streak length
+│   └── logs/                # rotating log files, created on first run (gitignored)
+├── deploy/
+│   ├── lol-accountability-bot.service   # systemd unit for running unattended on a VM
+│   └── backup_db.sh                      # daily bot.db backup script (cron this)
 ├── requirements.txt
 ├── .env.example            # template - copy to .env, never commit .env
 ├── .gitignore

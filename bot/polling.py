@@ -52,13 +52,25 @@ def start_polling(bot: discord.Client, channel_id: int) -> None:
 
     @tasks.loop(minutes=POLL_INTERVAL_MINUTES)
     async def poll_matches():
-        async with async_session() as session:
-            users = (
-                await session.execute(select(User).where(User.muted.is_(False)))
-            ).scalars().all()
+        # An uncaught exception here would stop this tasks.loop permanently
+        # (it doesn't auto-retry next interval like a normal cron job would),
+        # so log-and-continue at both the per-user and whole-cycle level.
+        try:
+            async with async_session() as session:
+                users = (
+                    await session.execute(select(User).where(User.muted.is_(False)))
+                ).scalars().all()
 
-        for user in users:
-            await _check_user(bot, channel_id, user)
+            for user in users:
+                try:
+                    await _check_user(bot, channel_id, user)
+                except Exception:
+                    log.exception(
+                        f"Unexpected error checking {user.riot_game_name}#{user.riot_tag_line}; "
+                        "skipping them this cycle"
+                    )
+        except Exception:
+            log.exception("Unexpected error in match-polling loop; will retry next cycle")
 
     @poll_matches.before_loop
     async def before_poll():
@@ -78,7 +90,10 @@ def start_reminders(bot: discord.Client, channel_id: int) -> None:
 
     @tasks.loop(hours=REMINDER_INTERVAL_HOURS)
     async def send_reminders():
-        await _send_reminders(bot, channel_id)
+        try:
+            await _send_reminders(bot, channel_id)
+        except Exception:
+            log.exception("Unexpected error in reminder loop; will retry next cycle")
 
     @send_reminders.before_loop
     async def before_reminders():

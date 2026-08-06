@@ -8,6 +8,7 @@ and periodically remind users of ones still pending.
 """
 
 import logging
+import logging.handlers
 import os
 from datetime import datetime, timezone
 
@@ -27,7 +28,22 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")  # optional: set this for instant command sync during dev
 ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")  # where loss/task messages get posted
 
-logging.basicConfig(level=logging.INFO)
+# Rotating file handler (5MB x 3 backups) alongside stdout, so logs survive
+# under systemd/journald without growing bot/logs/bot.log unbounded.
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+_log_formatter = logging.Formatter("[%(asctime)s] [%(levelname)-8s] %(name)s: %(message)s")
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+
+_file_handler = logging.handlers.RotatingFileHandler(
+    os.path.join(LOG_DIR, "bot.log"), maxBytes=5 * 1024 * 1024, backupCount=3
+)
+_file_handler.setFormatter(_log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger("bot")
 
 intents = discord.Intents.default()
@@ -354,7 +370,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 def main():
     if not DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Check your .env file.")
-    bot.run(DISCORD_TOKEN)
+    # log_handler=None: we already configured logging above (console + rotating
+    # file); without this, discord.py additionally installs its own handler and
+    # every log line gets printed twice in two different formats.
+    bot.run(DISCORD_TOKEN, log_handler=None)
 
 
 if __name__ == "__main__":

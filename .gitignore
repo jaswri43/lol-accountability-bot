@@ -11,6 +11,10 @@ venv/
 # Database
 *.db
 *.sqlite3
+backups/
+
+# Logs
+bot/logs/
 
 # Editor
 .vscode/

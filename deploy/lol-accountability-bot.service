@@ -1,0 +1,19 @@
+[Unit]
+Description=LoL Accountability Bot (Discord)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+# Must be the project root (not bot/) -- db.py's sqlite path ("bot.db") is
+# relative and resolves against the process's cwd, not the script's location.
+WorkingDirectory=/home/ubuntu/lol-accountability-bot
+ExecStart=/home/ubuntu/lol-accountability-bot/venv/bin/python /home/ubuntu/lol-accountability-bot/bot/main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
