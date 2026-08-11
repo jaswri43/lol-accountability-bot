@@ -34,6 +34,11 @@ class User(Base):
     flex_tier: Mapped[str | None] = mapped_column(nullable=True)
     flex_rank: Mapped[str | None] = mapped_column(nullable=True)
     flex_lp: Mapped[int | None] = mapped_column(nullable=True)
+    # Pity meter driving the task-severity system (see bot/severity.py) and
+    # the per-user opt-in toggle for it. Unused/frozen for users who never
+    # turn severity_mode on.
+    pity: Mapped[float] = mapped_column(default=0.0)
+    severity_mode: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class ProcessedMatch(Base):
@@ -69,6 +74,10 @@ class TaskTemplate(Base):
     description: Mapped[str] = mapped_column(String)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    # Severity tier this task is tagged for ("low"/"medium"/"high"), used
+    # when its owner has severity_mode on. Nullable: untagged tasks are
+    # tier-agnostic and only used as a fallback in severity mode.
+    tier: Mapped[str | None] = mapped_column(nullable=True)
 
 
 async def init_db() -> None:
@@ -83,6 +92,9 @@ async def init_db() -> None:
         await _add_column_if_missing(conn, "users", "flex_tier", "VARCHAR")
         await _add_column_if_missing(conn, "users", "flex_rank", "VARCHAR")
         await _add_column_if_missing(conn, "users", "flex_lp", "INTEGER")
+        await _add_column_if_missing(conn, "users", "pity", "REAL DEFAULT 0")
+        await _add_column_if_missing(conn, "users", "severity_mode", "BOOLEAN DEFAULT 0")
+        await _add_column_if_missing(conn, "task_templates", "tier", "VARCHAR")
 
 
 async def _add_column_if_missing(conn, table: str, column: str, column_type: str) -> None:

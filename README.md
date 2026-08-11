@@ -9,6 +9,34 @@ assigns accountability tasks after a loss, completable via `/done` or the
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
 
+Phase 9: pity-based task severity.
+
+- `/severity` toggles a per-user opt-in "severity mode" (off by default,
+  `users.severity_mode`). While off, losses behave exactly as before:
+  a random pick from the user's active `task_templates`, no tiers, no pity
+  tracking at all.
+- While on, each **counted** ranked loss draws a Low/Medium/High severity
+  tier and assigns a task from templates tagged with that tier
+  (`task_templates.tier`, set via `/addtask description tier`), falling back
+  to any active template -- with a note in the task message -- if none are
+  tagged for the drawn tier yet.
+- The draw is weighted by a per-user `pity` float (`users.pity`) that rises
+  by `LOSS_STEP` (8.0) on a counted loss and falls by `WIN_STEP` (7.2,
+  floored at 0) on a counted win. Odds are computed fresh each time by
+  linearly interpolating between a DEFAULT distribution (pity 0: Low 60% /
+  Medium 30% / High 10%) and a MAX distribution (pity >= `PITY_CAP` of 60:
+  Low 20% / Medium 40% / High 40%) -- all named constants in
+  `bot/severity.py`. A High draw soft-resets pity to 60% of its post-loss
+  value (`RETAIN_FACTOR`) so hitting High doesn't just keep compounding.
+  Remakes (`riot_api.is_remake`, Riot's early-surrender flag) are fully
+  excluded from pity and the tier draw either way; forfeits/short games that
+  actually change LP still count.
+- The raw pity number, odds, and tier draw are never shown in the loss/task
+  message itself -- only the tone (`bot/tone.py`'s tier-based intro/color
+  variants, light for Low up to emphatic for High) hints at severity.
+  `/status` shows a severity-mode user's current approximate odds (e.g.
+  "Low 48% / Medium 34% / High 18%") without exposing the raw pity value.
+
 Phase 8: match context, rank tracking, and persistent buttons.
 
 - Each loss embed now shows the champion played, KDA, and queue type
@@ -140,13 +168,14 @@ rotating file at `bot/logs/bot.log` (5MB x 3 backups).
 lol-accountability-bot/
 ├── bot/
 │   ├── main.py            # entry point, bot setup, all slash commands, persistent-view registration
-│   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks, task_templates) + init_db(), complete_task()
+│   ├── db.py               # SQLAlchemy models (users incl. pity/severity_mode, processed_matches, tasks, task_templates incl. tier) + init_db(), complete_task()
 │   ├── riot_api.py         # thin async Riot API client (americas region + na1 platform routing)
 │   ├── polling.py          # background loops: match-polling (losses -> tasks, rank tracking) and task reminders
 │   ├── ranked.py            # tier/rank comparison + formatting (LP delta, promotion/demotion detection)
 │   ├── views.py             # persistent Mark Done button (TaskCompletionView)
-│   ├── accountability.py   # picks a task per-user from task_templates, with a fallback default
-│   ├── tone.py              # picks loss-message wording/embed color based on losing-streak length
+│   ├── accountability.py   # picks a task per-user from task_templates (tier-aware), with a fallback default
+│   ├── severity.py          # pity-based severity odds/tier-draw logic for /severity mode
+│   ├── tone.py              # picks loss-message wording/embed color from losing-streak length or severity tier
 │   └── logs/                # rotating log files, created on first run (gitignored)
 ├── deploy/
 │   ├── lol-accountability-bot.service   # systemd unit for running unattended on a VM

@@ -110,3 +110,10 @@ def get_participant(match_details: dict, puuid: str) -> dict:
 def did_player_lose(match_details: dict, puuid: str) -> bool:
     """Check the given participant's "win" field in a match-v5 response."""
     return not get_participant(match_details, puuid)["win"]
+
+
+def is_remake(match_details: dict, puuid: str) -> bool:
+    """True if the match ended in an early-surrender remake for this
+    participant -- Riot voids these (no LP change, no meaningful stats), so
+    callers should exclude them from anything LP/pity-driven."""
+    return get_participant(match_details, puuid).get("gameEndedInEarlySurrender", False)

@@ -29,8 +29,10 @@ from riot_api import (
     get_match_ids_by_puuid,
     get_participant,
     get_ranked_stats,
+    is_remake,
 )
-from tone import pick_color, pick_intro
+from severity import apply_loss_pity, apply_win_pity
+from tone import pick_color, pick_intro, pick_severity_color, pick_severity_intro
 from views import TaskCompletionView
 
 log = logging.getLogger("bot.polling")
@@ -216,8 +218,19 @@ async def _check_user(bot: discord.Client, channel_id: int, user: User) -> None:
 
             if was_loss:
                 await _assign_task(session, bot, channel_id, user, match_id, match)
+            else:
+                await _apply_win_pity(session, user, match)
 
         await session.commit()
+
+
+async def _apply_win_pity(session, user: User, match: dict) -> None:
+    """Ease off a severity_mode user's pity meter on a counted ranked win.
+    No-op for non-severity users and for remakes (excluded entirely)."""
+    tracked_user = await session.get(User, user.discord_id)
+    if not tracked_user.severity_mode or is_remake(match, user.riot_puuid):
+        return
+    apply_win_pity(tracked_user)
 
 
 def _match_chronological_key(match_id: str) -> int:
@@ -318,7 +331,14 @@ async def _update_rank_tracking(session, user: User, queue_id: int) -> tuple[str
 async def _assign_task(
     session, bot: discord.Client, channel_id: int, user: User, match_id: str, match: dict
 ) -> None:
-    description, used_fallback = await pick_task_for_user(session, user.discord_id)
+    tracked_user = await session.get(User, user.discord_id)
+    counted = tracked_user.severity_mode and not is_remake(match, user.riot_puuid)
+
+    tier: str | None = None
+    if counted:
+        tier = apply_loss_pity(tracked_user)  # draws from pre-loss pity, then updates it in place
+
+    description, note = await pick_task_for_user(session, user.discord_id, tier=tier)
     task = Task(discord_id=user.discord_id, match_id=match_id, task_description=description)
     session.add(task)
     await session.flush()  # populate task.id (and let the streak query below see this match)
@@ -338,17 +358,26 @@ async def _assign_task(
 
     rank_field, rank_announcement = await _update_rank_tracking(session, user, queue_id)
 
-    fallback_note = (
-        "\n*(No custom tasks set for you yet -- use `/addtask` to customize this.)*" if used_fallback else ""
-    )
+    if note == "no_templates":
+        extra_note = "\n*(No custom tasks set for you yet -- use `/addtask` to customize this.)*"
+    elif note == "tier_fallback":
+        extra_note = f"\n*(No **{tier}** tier tasks set up yet -- use `/addtask` with a tier to customize this.)*"
+    else:
+        extra_note = ""
+
+    if tier is not None:
+        intro, color = pick_severity_intro(tier), pick_severity_color(tier)
+    else:
+        intro, color = pick_intro(streak), pick_color(streak)
+
     embed = discord.Embed(
         title="Ranked Loss",
         description=(
-            f"{pick_intro(streak)}\n\n"
+            f"{intro}\n\n"
             f"**Task #{task.id}:** {description}\n\n"
-            f"Mark it done with the button below or `/done task_id:{task.id}`.{fallback_note}"
+            f"Mark it done with the button below or `/done task_id:{task.id}`.{extra_note}"
         ),
-        color=pick_color(streak),
+        color=color,
     )
     embed.add_field(name="Champion", value=champion, inline=True)
     embed.add_field(name="KDA", value=kda, inline=True)

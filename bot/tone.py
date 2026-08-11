@@ -47,3 +47,40 @@ def pick_color(streak: int) -> discord.Color:
         return discord.Color.red()
     else:
         return discord.Color.dark_red()
+
+
+# Tier-based wording, used instead of the streak-based intro/color above
+# whenever a severity tier was drawn (see severity.py) -- light/cheerful for
+# Low, more pointed for Medium, most emphatic for High. Never affects which
+# task gets assigned, only how the announcement reads.
+LOW_TIER_MESSAGES = [
+    "Low tier task, not too bad:",
+    "That's a loss, but a light one. Here's your task:",
+    "Could be worse. Task:",
+]
+
+MEDIUM_TIER_MESSAGES = [
+    "Medium severity this time -- step it up. Task:",
+    "That one stings a bit more. Task:",
+    "Medium tier. Let's go:",
+]
+
+HIGH_TIER_MESSAGES = [
+    "HIGH SEVERITY. No mercy this time. Task:",
+    "That's a big one. High tier task incoming:",
+    "Maximum severity drawn. Get to it:",
+]
+
+TIER_MESSAGES = {"low": LOW_TIER_MESSAGES, "medium": MEDIUM_TIER_MESSAGES, "high": HIGH_TIER_MESSAGES}
+TIER_COLORS = {"low": discord.Color.orange(), "medium": discord.Color.red(), "high": discord.Color.dark_red()}
+
+
+def pick_severity_intro(tier: str) -> str:
+    """Return an intro line for the loss announcement, worded for the
+    drawn severity tier ("low"/"medium"/"high")."""
+    return random.choice(TIER_MESSAGES[tier])
+
+
+def pick_severity_color(tier: str) -> discord.Color:
+    """Escalate the embed's side color along with the drawn severity tier."""
+    return TIER_COLORS[tier]
