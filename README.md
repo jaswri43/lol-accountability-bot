@@ -1,13 +1,34 @@
 # LoL Accountability Bot
 
 Discord bot that tracks League of Legends losses (via the Riot API) and
-assigns accountability tasks after a loss, completable via `/done` or by
-reacting with ✅ on the task message.
+assigns accountability tasks after a loss, completable via `/done` or the
+**Mark Done** button on the task message.
 
 ## Status
 
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
+
+Phase 8: match context, rank tracking, and persistent buttons.
+
+- Each loss embed now shows the champion played, KDA, and queue type
+  (Solo/Duo vs Flex), pulled straight from the match-v5 details already
+  being fetched -- no extra API calls.
+- Ranked stats (`league-v4`, platform-routed via `bot/riot_api.py`'s
+  `PLATFORM_ROUTE`, separate from the region-routed match/account APIs) are
+  tracked per queue on the `users` table. Each loss shows the LP change
+  since the last tracked value; a tier/rank change (promotion or demotion)
+  instead posts a separate announcement embed, since a plain LP delta
+  doesn't mean much across a tier boundary (`bot/ranked.py`). Unranked/
+  not-yet-placed queues are skipped gracefully, no error.
+- Reactions are gone. Task completion is now a persistent button
+  (`bot/views.py`'s `TaskCompletionView`, registered via `bot.add_view()`
+  in `on_ready`) that keeps responding correctly to clicks on messages
+  posted before a bot restart -- verified by restarting mid-test and
+  clicking a pre-restart message's button. Wrong-user clicks are rejected
+  ephemerally without completing the task; on success it calls the same
+  `complete_task()` helper `/done` uses, then edits the message in place
+  (disabled button, completion note) instead of a separate reply.
 
 Phase 7: production-readiness and deployment. Logging goes to stdout and a
 rotating file (`bot/logs/bot.log`, 5MB x 3 backups); both background loops
@@ -27,9 +48,6 @@ have a tone that escalates with the user's current losing streak.
   per-user rotation of custom task descriptions (`task_templates`). On a
   loss, one active template is picked at random; if a user hasn't added
   any, it falls back to a generic default and says so.
-- Each task message gets a ✅ reaction from the bot. Reacting with ✅
-  completes the task (only for the user it belongs to) via the same
-  completion path as `/done`.
 - `/status` shows a user's pending tasks; `/stats` shows total/completed/
   pending counts. Both, plus the loss and reminder announcements, are
   Discord embeds now instead of plain text.
@@ -121,10 +139,12 @@ rotating file at `bot/logs/bot.log` (5MB x 3 backups).
 ```
 lol-accountability-bot/
 ├── bot/
-│   ├── main.py            # entry point, bot setup, all slash commands, reaction listener
-│   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks, task_templates) + init_db()
-│   ├── riot_api.py         # thin async Riot API client (americas routing cluster)
-│   ├── polling.py          # background loops: match-polling (losses -> tasks) and task reminders
+│   ├── main.py            # entry point, bot setup, all slash commands, persistent-view registration
+│   ├── db.py               # SQLAlchemy models (users, processed_matches, tasks, task_templates) + init_db(), complete_task()
+│   ├── riot_api.py         # thin async Riot API client (americas region + na1 platform routing)
+│   ├── polling.py          # background loops: match-polling (losses -> tasks, rank tracking) and task reminders
+│   ├── ranked.py            # tier/rank comparison + formatting (LP delta, promotion/demotion detection)
+│   ├── views.py             # persistent Mark Done button (TaskCompletionView)
 │   ├── accountability.py   # picks a task per-user from task_templates, with a fallback default
 │   ├── tone.py              # picks loss-message wording/embed color based on losing-streak length
 │   └── logs/                # rotating log files, created on first run (gitignored)

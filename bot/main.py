@@ -2,15 +2,15 @@
 LoL Accountability Bot - entry point.
 
 Connects to Discord, registers slash commands (/register, /mute, /unmute,
-/done, /addtask, /mytasks, /removetask, /status, /stats, /help), and starts
-the background loops that assign accountability tasks after ranked losses
-and periodically remind users of ones still pending.
+/done, /addtask, /mytasks, /removetask, /status, /stats, /help), registers
+the persistent Mark Done button view, and starts the background loops that
+assign accountability tasks after ranked losses and periodically remind
+users of ones still pending.
 """
 
 import logging
 import logging.handlers
 import os
-from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -18,9 +18,10 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from sqlalchemy import select
 
-from db import Task, TaskTemplate, User, async_session, init_db
+from db import Task, TaskTemplate, User, async_session, complete_task, init_db
 from polling import seed_existing_matches, start_polling, start_reminders
 from riot_api import RiotAPIError, get_account_by_riot_id
+from views import TaskCompletionView
 
 load_dotenv()
 
@@ -76,6 +77,11 @@ async def on_ready():
     else:
         log.warning("ANNOUNCE_CHANNEL_ID is not set; match polling will not start")
 
+    # Re-registers the Mark Done button's callback for every task message
+    # ever posted (not just ones from this process run) -- without this,
+    # buttons on messages from before a restart stop responding entirely.
+    bot.add_view(TaskCompletionView())
+
 
 @bot.tree.command(name="ping", description="Check that the bot is alive")
 async def ping(interaction: discord.Interaction):
@@ -88,7 +94,7 @@ async def help_command(interaction: discord.Interaction):
         "**LoL Accountability Bot**\n"
         "Tracks your ranked League of Legends losses and assigns you an accountability "
         "task each time you lose -- job hunting, workouts, whatever you set up. Complete "
-        "a task with `/done` or by reacting ✅ on its message.\n"
+        "a task with `/done` or the **Mark Done** button on its message.\n"
         "\n"
         "**Getting started**\n"
         "`/register game_name tag_line` -- link your Riot ID (e.g. `Yogurt` / `fried` for "
@@ -107,10 +113,10 @@ async def help_command(interaction: discord.Interaction):
         "\n"
         "**Completing a task**\n"
         "`/done [task_id]` -- mark a task done. Leave `task_id` blank to complete your "
-        "most recent pending task. Or just react ✅ on the task's announcement message "
-        "in the channel -- only the person the task belongs to can complete it that way. "
-        "A pending task left untouched for a while gets an occasional reminder ping in "
-        "the channel.\n"
+        "most recent pending task. Or click the **Mark Done** button on the task's "
+        "announcement message in the channel -- only the person the task belongs to can "
+        "complete it that way. A pending task left untouched for a while gets an "
+        "occasional reminder ping in the channel.\n"
         "\n"
         "**Checking progress**\n"
         "`/status` -- your currently pending tasks.\n"
@@ -201,13 +207,6 @@ async def unmute(interaction: discord.Interaction):
     await interaction.response.send_message("Unmuted -- loss tracking is back on.", ephemeral=True)
 
 
-async def _complete_task(session, task: Task) -> None:
-    """Shared by /done and the ✅-reaction listener so completion is defined
-    in exactly one place."""
-    task.status = "done"
-    task.completed_at = datetime.now(timezone.utc)
-
-
 @bot.tree.command(name="done", description="Mark an accountability task as complete")
 @app_commands.describe(
     task_id="The task ID from the reminder message. Leave blank to mark your most recent pending task done."
@@ -240,7 +239,7 @@ async def done(interaction: discord.Interaction, task_id: int | None = None):
             )
             return
 
-        await _complete_task(session, task)
+        await complete_task(session, task)
         await session.commit()
 
     await interaction.response.send_message(f"Task #{task.id} marked done: **{task.task_description}**")
@@ -342,29 +341,6 @@ async def stats(interaction: discord.Interaction):
     embed.add_field(name="Completed", value=str(completed))
     embed.add_field(name="Pending", value=str(pending))
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if bot.user is not None and payload.user_id == bot.user.id:
-        return
-    if str(payload.emoji) != "✅":
-        return
-
-    async with async_session() as session:
-        result = await session.execute(select(Task).where(Task.message_id == payload.message_id))
-        task = result.scalars().first()
-        if task is None or task.discord_id != payload.user_id or task.status != "pending":
-            return
-
-        await _complete_task(session, task)
-        await session.commit()
-
-    channel = bot.get_channel(payload.channel_id)
-    if channel is not None:
-        await channel.send(
-            f"<@{payload.user_id}> marked task #{task.id} done via reaction: **{task.task_description}**"
-        )
 
 
 def main():

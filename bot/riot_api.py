@@ -14,10 +14,26 @@ import httpx
 
 REGIONAL_ROUTE = "https://americas.api.riotgames.com"
 
+# league-v4 (ranked stats) is platform-routed (e.g. na1), unlike account-v1
+# and match-v5 above which are region-routed (americas). Hardcoded like
+# REGIONAL_ROUTE above, on the same assumption: both players are on NA1.
+# https://developer.riotgames.com/apis#league-v4
+PLATFORM_ROUTE = "https://na1.api.riotgames.com"
+
 # https://static.developer.riotgames.com/docs/lol/queues.json
 RANKED_SOLO_QUEUE_ID = 420
 RANKED_FLEX_QUEUE_ID = 440
 RANKED_QUEUE_IDS = {RANKED_SOLO_QUEUE_ID, RANKED_FLEX_QUEUE_ID}
+
+QUEUE_ID_LABELS = {
+    RANKED_SOLO_QUEUE_ID: "Ranked Solo/Duo",
+    RANKED_FLEX_QUEUE_ID: "Ranked Flex",
+}
+# league-v4 identifies queues by these string codes rather than queueId.
+QUEUE_ID_TO_QUEUE_TYPE = {
+    RANKED_SOLO_QUEUE_ID: "RANKED_SOLO_5x5",
+    RANKED_FLEX_QUEUE_ID: "RANKED_FLEX_SR",
+}
 
 
 class RiotAPIError(Exception):
@@ -72,9 +88,25 @@ async def get_match_details(match_id: str) -> dict:
     return await _get(url)
 
 
-def did_player_lose(match_details: dict, puuid: str) -> bool:
-    """Check the given participant's "win" field in a match-v5 response."""
+async def get_ranked_stats(puuid: str) -> dict[str, dict]:
+    """Return ranked stats keyed by queueType ("RANKED_SOLO_5x5",
+    "RANKED_FLEX_SR"), one entry per queue the player actually has an entry
+    in. An unranked/not-yet-placed queue is simply absent from the result,
+    not an error -- callers should treat a missing key as "no data yet".
+    """
+    url = f"{PLATFORM_ROUTE}/lol/league/v4/entries/by-puuid/{puuid}"
+    entries = await _get(url)
+    return {entry["queueType"]: entry for entry in entries}
+
+
+def get_participant(match_details: dict, puuid: str) -> dict:
+    """Return the match participant entry for the given puuid."""
     for participant in match_details["info"]["participants"]:
         if participant["puuid"] == puuid:
-            return not participant["win"]
+            return participant
     raise ValueError(f"puuid {puuid} not found among match participants")
+
+
+def did_player_lose(match_details: dict, puuid: str) -> bool:
+    """Check the given participant's "win" field in a match-v5 response."""
+    return not get_participant(match_details, puuid)["win"]

@@ -17,14 +17,21 @@ from sqlalchemy import or_, select
 
 from accountability import pick_task_for_user
 from db import ProcessedMatch, Task, User, async_session
+from ranked import describe_change, format_rank, format_tier_rank
 from riot_api import (
+    QUEUE_ID_LABELS,
+    QUEUE_ID_TO_QUEUE_TYPE,
     RANKED_QUEUE_IDS,
+    RANKED_SOLO_QUEUE_ID,
     RiotAPIError,
     did_player_lose,
     get_match_details,
     get_match_ids_by_puuid,
+    get_participant,
+    get_ranked_stats,
 )
 from tone import pick_color, pick_intro
+from views import TaskCompletionView
 
 log = logging.getLogger("bot.polling")
 
@@ -139,7 +146,7 @@ async def _send_reminders(bot: discord.Client, channel_id: int) -> None:
                 description=f"You still have {len(tasks_for_user)} pending accountability task(s):\n{lines}",
                 color=discord.Color.gold(),
             )
-            embed.set_footer(text="Mark one done with /done or by reacting ✅ on its original message.")
+            embed.set_footer(text="Mark one done with /done or the Mark Done button on its original message.")
             await channel.send(content=f"<@{discord_id}>", embed=embed)
             for task in tasks_for_user:
                 task.last_reminded_at = now
@@ -208,7 +215,7 @@ async def _check_user(bot: discord.Client, channel_id: int, user: User) -> None:
             session.add(ProcessedMatch(match_id=match_id, discord_id=user.discord_id, was_loss=was_loss))
 
             if was_loss:
-                await _assign_task(session, bot, channel_id, user, match_id)
+                await _assign_task(session, bot, channel_id, user, match_id, match)
 
         await session.commit()
 
@@ -237,7 +244,80 @@ async def _get_current_loss_streak(session, discord_id: int) -> int:
     return streak
 
 
-async def _assign_task(session, bot: discord.Client, channel_id: int, user: User, match_id: str) -> None:
+async def _update_rank_tracking(session, user: User, queue_id: int) -> tuple[str | None, discord.Embed | None]:
+    """Fetch current ranked stats, compute the LP change since the last
+    stored snapshot for this queue, update the stored snapshot, and build a
+    separate rank-change announcement embed if the tier/rank changed.
+
+    Returns (rank_field_text, rank_change_embed) -- either may be None:
+    rank_field_text is None if the user isn't ranked in this queue at all
+    (not placed yet); rank_change_embed is None unless a promotion/demotion
+    just happened.
+    """
+    queue_type = QUEUE_ID_TO_QUEUE_TYPE.get(queue_id)
+    if queue_type is None:
+        return None, None
+
+    try:
+        stats = await get_ranked_stats(user.riot_puuid)
+    except RiotAPIError as e:
+        log.error(f"Failed to fetch ranked stats for {user.riot_game_name}#{user.riot_tag_line}: {e}")
+        return None, None
+
+    new_entry = stats.get(queue_type)
+    if new_entry is None:
+        return None, None  # unranked/not placed in this queue -- nothing to track yet
+
+    # `user` may be a detached instance loaded by an earlier, already-closed
+    # session; re-fetch through the active session so the mutations below
+    # are actually picked up when the caller commits.
+    tracked_user = await session.get(User, user.discord_id)
+
+    is_solo = queue_id == RANKED_SOLO_QUEUE_ID
+    old_tier = tracked_user.solo_tier if is_solo else tracked_user.flex_tier
+    old_entry = None
+    if old_tier is not None:
+        old_entry = {
+            "tier": old_tier,
+            "rank": tracked_user.solo_rank if is_solo else tracked_user.flex_rank,
+            "leaguePoints": tracked_user.solo_lp if is_solo else tracked_user.flex_lp,
+        }
+
+    lp_change, changed, direction = describe_change(old_entry, new_entry)
+
+    if is_solo:
+        tracked_user.solo_tier = new_entry["tier"]
+        tracked_user.solo_rank = new_entry["rank"]
+        tracked_user.solo_lp = new_entry["leaguePoints"]
+    else:
+        tracked_user.flex_tier = new_entry["tier"]
+        tracked_user.flex_rank = new_entry["rank"]
+        tracked_user.flex_lp = new_entry["leaguePoints"]
+
+    queue_label = QUEUE_ID_LABELS[queue_id]
+
+    if changed and old_entry is not None:
+        went_up = direction == "up"
+        announcement = discord.Embed(
+            title="Promotion! \U0001f53c" if went_up else "Demotion \U0001f53d",
+            description=(
+                f"<@{user.discord_id}> {'ranked up' if went_up else 'dropped'} in "
+                f"**{queue_label}**: {format_rank(old_entry)} → {format_rank(new_entry)}"
+            ),
+            color=discord.Color.gold() if went_up else discord.Color.dark_grey(),
+        )
+        return format_rank(new_entry), announcement
+
+    if lp_change is not None:
+        sign = "+" if lp_change >= 0 else ""
+        return f"{format_tier_rank(new_entry)} ({new_entry['leaguePoints']} LP, {sign}{lp_change})", None
+
+    return format_rank(new_entry), None
+
+
+async def _assign_task(
+    session, bot: discord.Client, channel_id: int, user: User, match_id: str, match: dict
+) -> None:
     description, used_fallback = await pick_task_for_user(session, user.discord_id)
     task = Task(discord_id=user.discord_id, match_id=match_id, task_description=description)
     session.add(task)
@@ -250,6 +330,14 @@ async def _assign_task(session, bot: discord.Client, channel_id: int, user: User
         log.error(f"Announce channel {channel_id} not found/accessible; task #{task.id} created but not posted")
         return
 
+    queue_id = match["info"]["queueId"]
+    participant = get_participant(match, user.riot_puuid)
+    kda = f"{participant['kills']}/{participant['deaths']}/{participant['assists']}"
+    champion = participant["championName"]
+    queue_label = QUEUE_ID_LABELS.get(queue_id, "Ranked")
+
+    rank_field, rank_announcement = await _update_rank_tracking(session, user, queue_id)
+
     fallback_note = (
         "\n*(No custom tasks set for you yet -- use `/addtask` to customize this.)*" if used_fallback else ""
     )
@@ -258,16 +346,19 @@ async def _assign_task(session, bot: discord.Client, channel_id: int, user: User
         description=(
             f"{pick_intro(streak)}\n\n"
             f"**Task #{task.id}:** {description}\n\n"
-            f"Mark it done with `/done task_id:{task.id}` or by reacting with ✅ below.{fallback_note}"
+            f"Mark it done with the button below or `/done task_id:{task.id}`.{fallback_note}"
         ),
         color=pick_color(streak),
     )
+    embed.add_field(name="Champion", value=champion, inline=True)
+    embed.add_field(name="KDA", value=kda, inline=True)
+    embed.add_field(name="Queue", value=queue_label, inline=True)
+    if rank_field is not None:
+        embed.add_field(name="Rank", value=rank_field, inline=True)
     embed.set_footer(text=f"Current streak: {streak} loss{'es' if streak != 1 else ''}")
 
-    message = await channel.send(content=f"<@{user.discord_id}>", embed=embed)
+    message = await channel.send(content=f"<@{user.discord_id}>", embed=embed, view=TaskCompletionView())
     task.message_id = message.id
 
-    try:
-        await message.add_reaction("✅")
-    except discord.HTTPException:
-        log.error(f"Failed to add checkmark reaction to task #{task.id} message")
+    if rank_announcement is not None:
+        await channel.send(embed=rank_announcement)

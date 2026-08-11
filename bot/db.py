@@ -25,6 +25,15 @@ class User(Base):
     riot_tag_line: Mapped[str] = mapped_column(String)
     registered_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Last-known ranked stats per queue, so a new loss's LP change can be
+    # computed as a delta against these. Nullable: null until the user's
+    # first tracked ranked game in that queue (or if never placed there).
+    solo_tier: Mapped[str | None] = mapped_column(nullable=True)
+    solo_rank: Mapped[str | None] = mapped_column(nullable=True)
+    solo_lp: Mapped[int | None] = mapped_column(nullable=True)
+    flex_tier: Mapped[str | None] = mapped_column(nullable=True)
+    flex_rank: Mapped[str | None] = mapped_column(nullable=True)
+    flex_lp: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class ProcessedMatch(Base):
@@ -68,6 +77,12 @@ async def init_db() -> None:
         await _add_column_if_missing(conn, "tasks", "message_id", "INTEGER")
         await _add_column_if_missing(conn, "tasks", "last_reminded_at", "DATETIME")
         await _add_column_if_missing(conn, "users", "muted", "BOOLEAN DEFAULT 0")
+        await _add_column_if_missing(conn, "users", "solo_tier", "VARCHAR")
+        await _add_column_if_missing(conn, "users", "solo_rank", "VARCHAR")
+        await _add_column_if_missing(conn, "users", "solo_lp", "INTEGER")
+        await _add_column_if_missing(conn, "users", "flex_tier", "VARCHAR")
+        await _add_column_if_missing(conn, "users", "flex_rank", "VARCHAR")
+        await _add_column_if_missing(conn, "users", "flex_lp", "INTEGER")
 
 
 async def _add_column_if_missing(conn, table: str, column: str, column_type: str) -> None:
@@ -78,3 +93,10 @@ async def _add_column_if_missing(conn, table: str, column: str, column_type: str
     columns = {row[1] for row in result.fetchall()}
     if column not in columns:
         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))
+
+
+async def complete_task(session: AsyncSession, task: Task) -> None:
+    """Shared by /done and the persistent Mark Done button so completion is
+    defined in exactly one place."""
+    task.status = "done"
+    task.completed_at = datetime.now(timezone.utc)
