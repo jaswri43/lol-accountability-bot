@@ -1,0 +1,20 @@
+[Unit]
+Description=LoL Accountability API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+# Must be the project root, same as the bot's service -- both processes
+# resolve bot.db (a relative path in db.py) against the process cwd, and
+# they need to resolve to the exact same file.
+WorkingDirectory=/home/ubuntu/lol-accountability-bot
+ExecStart=/home/ubuntu/lol-accountability-bot/venv/bin/python /home/ubuntu/lol-accountability-bot/api/main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

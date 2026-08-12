@@ -9,6 +9,35 @@ assigns accountability tasks after a loss, completable via `/done` or the
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
 
+Phase 10: `api/` -- a FastAPI backend laying the groundwork for a future web
+dashboard. Not deployed to the VM yet (see `deploy/lol-accountability-api.service`
+when ready); local dev is fully tested. No frontend exists yet.
+
+- Runs as its own process (`python api/main.py`, port 8001 by default),
+  separate from the Discord bot but reading/writing the same `bot.db`.
+  `api/bot_bridge.py` puts `bot/` on `sys.path` and re-exports the models,
+  `async_session`, `complete_task()`, and the severity odds functions from
+  there -- nothing about tasks, templates, or pity math is reimplemented.
+- Auth is Discord OAuth2 (`/auth/login` -> Discord consent -> `/auth/callback`
+  exchanges the code, fetches the Discord identity, and issues our own
+  signed JWT keyed on `discord_id`). Protected routes take that JWT as a
+  Bearer token (`api/auth.py`'s `get_current_user` dependency); there's no
+  separate concept of "registered" required to authenticate, only to use
+  routes that need a `users` row (e.g. `/task-templates` creation).
+- Endpoints, all scoped to the caller's own `discord_id` only: `GET /tasks`
+  (`?status=pending|all`), `POST /tasks/{id}/complete`, `GET`/`POST
+  /task-templates`, `DELETE /task-templates/{id}` (soft-delete, same as
+  `/removetask`), `GET /status` (pending count, pity, opted-in flag, current
+  odds), `GET /me` (Discord username from the JWT + linked Riot ID).
+  `POST /tasks/{id}/complete` calls the exact same `complete_task()` helper
+  as `/done` and the Mark Done button.
+- CORS currently allows `localhost:3000`/`localhost:5173` only -- add the
+  production frontend's origin in `api/main.py` once it exists.
+- Needs `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET`/`DISCORD_REDIRECT_URI`
+  (a Discord OAuth2 app -- can reuse the bot's application, separate
+  credentials from `DISCORD_TOKEN`) and `JWT_SECRET` in `.env`; see
+  `.env.example`.
+
 Phase 9: pity-based task severity, always on -- no toggle command. A user
 opts in purely by tagging a task Medium or High; until they do, everything
 behaves exactly as it did before this feature existed.
@@ -135,6 +164,18 @@ have a tone that escalates with the user's current losing streak.
    You should see a "Logged in as ..." log line. In your Discord server,
    try `/ping` — the bot should reply "Pong! Bot is up and running."
 
+6. **(Optional) Run the API:**
+   ```bash
+   python api/main.py
+   ```
+   Run from the repo root (same as the bot — `bot.db`'s path is relative to
+   the process's working directory). Needs `DISCORD_CLIENT_ID`,
+   `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, and `JWT_SECRET` set in
+   `.env` — see the Phase 10 notes above and `.env.example`. `GET
+   /health` should return `{"status": "ok"}` once it's up. The bot doesn't
+   need to be running for the API to work; they just share the same
+   `bot.db` file.
+
 ## Deployment (Linux VM, systemd)
 
 For running unattended long-term (e.g. an Oracle Cloud VM). See
@@ -173,6 +214,14 @@ credentials.
    # add:
    0 3 * * * /home/ubuntu/lol-accountability-bot/deploy/backup_db.sh >> /home/ubuntu/lol-accountability-bot/backups/backup.log 2>&1
    ```
+6. (Optional, once you're ready) install the API the same way, using
+   `deploy/lol-accountability-api.service` in place of the bot's unit file
+   and `lol-accountability-api` in place of `lol-accountability-bot` in the
+   `systemctl`/`journalctl` commands above. It needs the same `.env` file
+   plus the OAuth/JWT variables from the Phase 10 notes above, and it opens
+   port 8001 (`API_PORT` in `.env`) -- if you want it reachable from outside
+   the VM, add an ingress rule for that port in the OCI security list, same
+   as you'd do for any other exposed port.
 
 ### Deploying an update (after the first-time setup above)
 
@@ -222,8 +271,16 @@ lol-accountability-bot/
 │   ├── severity.py          # pity-based severity odds/tier-draw logic for /severity mode
 │   ├── tone.py              # picks loss-message wording/embed color from losing-streak length or severity tier
 │   └── logs/                # rotating log files, created on first run (gitignored)
+├── api/
+│   ├── main.py             # entry point, FastAPI app, CORS, routers, lifespan (init_db)
+│   ├── bot_bridge.py        # puts bot/ on sys.path and re-exports its db/severity/accountability code -- nothing duplicated
+│   ├── auth.py              # Discord OAuth2 login/callback + JWT issuing/validation (get_current_user dependency)
+│   ├── routes.py            # /tasks, /task-templates, /status, /me endpoints, all scoped to the caller's own discord_id
+│   ├── schemas.py           # Pydantic request/response models
+│   └── logs/                 # rotating log files, created on first run (gitignored)
 ├── deploy/
-│   ├── lol-accountability-bot.service   # systemd unit for running unattended on a VM
+│   ├── lol-accountability-bot.service   # systemd unit for the bot
+│   ├── lol-accountability-api.service   # systemd unit for the API
 │   └── backup_db.sh                      # daily bot.db backup script (cron this)
 ├── requirements.txt
 ├── .env.example            # template - copy to .env, never commit .env
