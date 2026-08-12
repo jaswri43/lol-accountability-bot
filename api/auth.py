@@ -176,5 +176,9 @@ async def callback(code: str):
 @router.post("/logout")
 async def logout():
     response = JSONResponse({"ok": True})
-    response.delete_cookie(COOKIE_NAME, path="/")
+    # Attributes should match _set_session_cookie's -- deletion works
+    # regardless in practice, but mismatched Secure/SameSite on the
+    # clearing cookie is the kind of thing that's only inconsistent
+    # cross-browser, not obviously broken, so just match them.
+    response.delete_cookie(COOKIE_NAME, path="/", secure=COOKIE_SECURE, httponly=True, samesite="lax")
     return response
