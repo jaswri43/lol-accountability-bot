@@ -10,9 +10,12 @@ assigns accountability tasks after a loss, completable via `/done` or the
 Deployment below).
 
 Phase 11: `web/` -- a React + Vite + Tailwind dashboard for the API, fully
-actionable (not read-only). **Live** at `http://150.136.211.236` alongside
-the bot, served by nginx (`deploy/nginx.conf`) with the API reverse-proxied
-under `/api/`.
+actionable (not read-only). **Live** at
+`https://lol-accountability.duckdns.org` alongside the bot, served by nginx
+(`deploy/nginx.conf`) with the API reverse-proxied under `/api/`. HTTPS via
+a free Let's Encrypt cert (`certbot --nginx`, auto-renewing) and a free
+DuckDNS subdomain pointed at the VM's IP -- see the Deployment section.
+`COOKIE_SECURE=true` in prod now that there's a real cert.
 
 - Three views behind a Discord-login gate: **Dashboard** (username + linked
   Riot ID, pending task count, a Recharts odds bar chart, and pending tasks
@@ -301,12 +304,31 @@ credentials.
    `root` in `deploy/nginx.conf` already points -- no copy step needed, just
    re-run this after pulling a frontend change (see "Deploying an update"
    below).
-9. Before any of this works end-to-end: set `DISCORD_REDIRECT_URI` and
-   `FRONTEND_URL` in the VM's `.env` to the production, nginx-proxied URLs
-   (`http://<vm-ip>/api/auth/callback` and `http://<vm-ip>`, or your domain
-   if you have one), and update the matching Redirect URL on Discord's
-   OAuth2 app page to match -- Discord rejects a mismatch outright. Restart
-   the API service after changing `.env`.
+9. **Get a domain and a real TLS cert** -- Let's Encrypt won't issue a cert
+   for a bare IP, and shipping a session cookie in plaintext HTTP is worth
+   fixing once the site is actually live. A free
+   [DuckDNS](https://www.duckdns.org) subdomain works fine (sign in, claim a
+   name, point its "current ip" at the VM's public IP):
+   ```bash
+   sudo apt install -y certbot python3-certbot-nginx
+   sudo certbot --nginx -d yourname.duckdns.org
+   ```
+   `certbot --nginx` matches on nginx's `server_name` to find where to
+   install the cert -- `deploy/nginx.conf`'s is already set to
+   `lol-accountability.duckdns.org`; change it first if you're using a
+   different domain, then re-copy it into `sites-available/` before running
+   certbot. It rewrites the config in place to add a `listen 443 ssl` block
+   and an HTTP->HTTPS redirect and sets up auto-renewal -- copy
+   `/etc/nginx/sites-available/lol-accountability-bot` back into this repo's
+   `deploy/nginx.conf` afterward so a future from-scratch deploy gets HTTPS
+   immediately. Also open port 443 the same way you opened port 80 in step
+   7 -- both the OCI Security List *and* the VM's own `iptables` need it.
+10. Set `DISCORD_REDIRECT_URI` and `FRONTEND_URL` in the VM's `.env` to the
+    real HTTPS URLs (`https://yourname.duckdns.org/api/auth/callback` and
+    `https://yourname.duckdns.org`), and `COOKIE_SECURE=true` now that
+    there's a real cert. Update the matching Redirect URL on Discord's
+    OAuth2 app page to match -- Discord rejects a mismatch outright.
+    Restart the API service after changing `.env`.
 
 ### Deploying an update (after the first-time setup above)
 
