@@ -137,6 +137,12 @@ failure, starts on boot) and `deploy/backup_db.sh` (daily `bot.db` backup,
 keeps the last 7). Logs go to both stdout (captured by `journalctl`) and a
 rotating file at `bot/logs/bot.log` (5MB x 3 backups).
 
+**You need**: the VM's SSH private key and public IP, and SSH access
+(`ssh -i <key> ubuntu@<vm-ip>`). The repo is cloned on the VM at
+`~/lol-accountability-bot`, and GitHub access there is via a read-only
+deploy key already registered on the repo -- `git pull` on the VM needs no
+credentials.
+
 1. Clone the repo onto the VM and repeat the local-dev setup steps above
    (venv, `pip install -r requirements.txt`, `.env`) inside it.
 2. Edit `deploy/lol-accountability-bot.service`: adjust `User=`/`Group=`
@@ -161,6 +167,39 @@ rotating file at `bot/logs/bot.log` (5MB x 3 backups).
    # add:
    0 3 * * * /home/ubuntu/lol-accountability-bot/deploy/backup_db.sh >> /home/ubuntu/lol-accountability-bot/backups/backup.log 2>&1
    ```
+
+### Deploying an update (after the first-time setup above)
+
+The above is one-time. To ship a code change to the already-running bot:
+
+1. **Get the change onto GitHub first.** If it's a local commit that hasn't
+   been pushed (`git status`/`git log` will show it), review it, then
+   `git push`. The VM pulls from GitHub -- it never sees your local
+   filesystem directly.
+2. **Test locally before touching the VM, if practical** -- but stop the
+   VM's service first: `ssh ... "sudo systemctl stop lol-accountability-bot"`.
+   The bot uses one Discord token; running a local copy *and* the VM's copy
+   at the same time means Discord routes interactions and events to
+   whichever one happens to catch them, causing confusing intermittent
+   failures that look like bugs but aren't. Never run both at once.
+3. **Deploy:**
+   ```bash
+   ssh -i <key> ubuntu@<vm-ip>
+   cd lol-accountability-bot
+   git pull
+   ./venv/bin/pip install -r requirements.txt   # only needed if requirements.txt changed
+   sudo systemctl restart lol-accountability-bot   # or `start` if you stopped it in step 2
+   ```
+4. **Verify it actually came back up**, don't just assume:
+   ```bash
+   sudo systemctl status lol-accountability-bot   # should say "active (running)"
+   journalctl -u lol-accountability-bot -n 20      # should show a fresh login + command sync, no tracebacks
+   ```
+   If the change added new database columns, `db.py`'s `init_db()` adds
+   them automatically via `ALTER TABLE` on startup -- no manual migration
+   step, but worth spot-checking with
+   `sqlite3 bot.db "PRAGMA table_info(users);"` on the VM if you want to be
+   sure.
 
 ## Project layout
 
