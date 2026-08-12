@@ -30,6 +30,7 @@ from bot_bridge import init_db
 from routes import router as api_router
 
 API_PORT = int(os.getenv("API_PORT", "8001"))
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -56,13 +57,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="LoL Accountability API", lifespan=lifespan)
 
+# In both dev (Vite's proxy) and prod (nginx), the frontend calls this API
+# through a same-origin `/api/*` proxy, so the browser never actually makes
+# a cross-origin request during normal use -- this is just a safety net for
+# anything that talks to the API directly (e.g. hitting port 8001 without
+# going through the proxy).
+_cors_origins = list(dict.fromkeys([FRONTEND_URL, "http://localhost:5173", "http://localhost:3000"]))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        # TODO: add the production frontend's URL here once it exists.
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

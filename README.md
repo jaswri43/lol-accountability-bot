@@ -9,21 +9,40 @@ assigns accountability tasks after a loss, completable via `/done` or the
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
 
-Phase 10: `api/` -- a FastAPI backend laying the groundwork for a future web
-dashboard. Not deployed to the VM yet (see `deploy/lol-accountability-api.service`
-when ready); local dev is fully tested. No frontend exists yet.
+Phase 11: `web/` -- a React + Vite + Tailwind dashboard for the API, fully
+actionable (not read-only). Not deployed to the VM yet (see `deploy/nginx.conf`
+when ready); local dev is fully tested.
+
+- Three views behind a Discord-login gate: **Dashboard** (username + linked
+  Riot ID, pending task count, a Recharts odds bar chart, and pending tasks
+  with a Mark Done button that updates the list immediately), **History**
+  (every task, most recent first, with assigned/completed timestamps), and
+  **Tasks** (active + inactive templates, an add form, and a remove button).
+  All three just call the Phase 10 API below -- no logic duplicated.
+- Auth is cookie-based now, not the raw JWT-in-response Phase 10 shipped
+  with: `/auth/callback` sets the JWT as an httpOnly cookie and redirects to
+  `FRONTEND_URL` instead of returning JSON (`api/auth.py`). `GET
+  /auth/login`/`POST /auth/logout` round it out.
+- The frontend never talks to the API cross-origin. `web/vite.config.ts`'s
+  dev-server proxy (dev) and `deploy/nginx.conf` (prod) both forward
+  `/api/*` to the FastAPI backend on port 8001 with the prefix stripped, so
+  the browser sees one origin throughout -- login redirect, cookie, and
+  every fetch. CORS in `api/main.py` (`FRONTEND_URL` env var) is just a
+  fallback for anything that hits the API directly instead of through that
+  proxy.
+- One known gap: `GET /tasks` doesn't return a tier, because the `tasks`
+  table never stored one (only `task_templates` has `tier` -- see
+  `bot/db.py`). The Dashboard's pending-task list and History table both
+  just omit it rather than fake it. Attributing a tier to a past task would
+  need a schema change on the bot side, out of scope here.
+
+Phase 10: `api/` -- a FastAPI backend behind the Phase 11 dashboard above.
 
 - Runs as its own process (`python api/main.py`, port 8001 by default),
   separate from the Discord bot but reading/writing the same `bot.db`.
   `api/bot_bridge.py` puts `bot/` on `sys.path` and re-exports the models,
   `async_session`, `complete_task()`, and the severity odds functions from
   there -- nothing about tasks, templates, or pity math is reimplemented.
-- Auth is Discord OAuth2 (`/auth/login` -> Discord consent -> `/auth/callback`
-  exchanges the code, fetches the Discord identity, and issues our own
-  signed JWT keyed on `discord_id`). Protected routes take that JWT as a
-  Bearer token (`api/auth.py`'s `get_current_user` dependency); there's no
-  separate concept of "registered" required to authenticate, only to use
-  routes that need a `users` row (e.g. `/task-templates` creation).
 - Endpoints, all scoped to the caller's own `discord_id` only: `GET /tasks`
   (`?status=pending|all`), `POST /tasks/{id}/complete`, `GET`/`POST
   /task-templates`, `DELETE /task-templates/{id}` (soft-delete, same as
@@ -31,12 +50,10 @@ when ready); local dev is fully tested. No frontend exists yet.
   odds), `GET /me` (Discord username from the JWT + linked Riot ID).
   `POST /tasks/{id}/complete` calls the exact same `complete_task()` helper
   as `/done` and the Mark Done button.
-- CORS currently allows `localhost:3000`/`localhost:5173` only -- add the
-  production frontend's origin in `api/main.py` once it exists.
-- Needs `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET`/`DISCORD_REDIRECT_URI`
-  (a Discord OAuth2 app -- can reuse the bot's application, separate
-  credentials from `DISCORD_TOKEN`) and `JWT_SECRET` in `.env`; see
-  `.env.example`.
+- Needs `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET`/`DISCORD_REDIRECT_URI`/
+  `FRONTEND_URL`/`JWT_SECRET`/`COOKIE_SECURE` in `.env` -- see
+  `.env.example` and the Phase 11 notes above for how the redirect URI
+  relates to the frontend proxy.
 
 Phase 9: pity-based task severity, always on -- no toggle command. A user
 opts in purely by tagging a task Medium or High; until they do, everything
@@ -170,11 +187,26 @@ have a tone that escalates with the user's current losing streak.
    ```
    Run from the repo root (same as the bot — `bot.db`'s path is relative to
    the process's working directory). Needs `DISCORD_CLIENT_ID`,
-   `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, and `JWT_SECRET` set in
-   `.env` — see the Phase 10 notes above and `.env.example`. `GET
-   /health` should return `{"status": "ok"}` once it's up. The bot doesn't
-   need to be running for the API to work; they just share the same
-   `bot.db` file.
+   `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, `FRONTEND_URL`,
+   `JWT_SECRET`, and `COOKIE_SECURE` set in `.env` — see the Phase 10/11
+   notes above and `.env.example`. `GET /health` should return `{"status":
+   "ok"}` once it's up. The bot doesn't need to be running for the API to
+   work; they just share the same `bot.db` file.
+
+   `DISCORD_REDIRECT_URI` must be registered *exactly* under Redirects on
+   Discord's OAuth2 app page, and it's the frontend-proxied URL, not the
+   API's own port — see step 7 and `api/auth.py`'s docstring.
+
+7. **(Optional) Run the frontend:**
+   ```bash
+   cd web
+   npm install
+   npm run dev
+   ```
+   Needs the API running too (step 6) — the Vite dev server proxies `/api/*`
+   requests to it (`web/vite.config.ts`), which is also what makes the
+   Discord OAuth redirect land back on the frontend correctly. Open
+   `http://localhost:5173`; you should see a "Log in with Discord" button.
 
 ## Deployment (Linux VM, systemd)
 
@@ -218,10 +250,43 @@ credentials.
    `deploy/lol-accountability-api.service` in place of the bot's unit file
    and `lol-accountability-api` in place of `lol-accountability-bot` in the
    `systemctl`/`journalctl` commands above. It needs the same `.env` file
-   plus the OAuth/JWT variables from the Phase 10 notes above, and it opens
-   port 8001 (`API_PORT` in `.env`) -- if you want it reachable from outside
-   the VM, add an ingress rule for that port in the OCI security list, same
-   as you'd do for any other exposed port.
+   plus the OAuth/cookie/frontend variables from the Phase 10/11 notes
+   above. It listens on port 8001, but leave that port closed in the OCI
+   security list -- nginx (next) is what the outside world talks to, and it
+   reverse-proxies to the API over localhost, so 8001 never needs to be
+   reachable from outside the VM at all.
+7. **Install nginx** (serves the built frontend and reverse-proxies `/api/`
+   to the API, both on port 80 -- see `deploy/nginx.conf`):
+   ```bash
+   sudo apt update
+   sudo apt install -y nginx
+   sudo cp deploy/nginx.conf /etc/nginx/sites-available/lol-accountability-bot
+   sudo ln -s /etc/nginx/sites-available/lol-accountability-bot /etc/nginx/sites-enabled/
+   sudo rm -f /etc/nginx/sites-enabled/default
+   sudo nginx -t
+   sudo systemctl restart nginx
+   sudo systemctl enable nginx
+   ```
+   If the repo isn't cloned at `/home/ubuntu/lol-accountability-bot`, edit
+   the `root` path in `deploy/nginx.conf` (or the copy in
+   `sites-available/`) to match before running `nginx -t`. Make sure port 80
+   is open in the OCI security list (it usually already is).
+8. **Build and deploy the frontend:**
+   ```bash
+   cd web
+   npm install
+   npm run build
+   ```
+   `npm run build` outputs to `web/dist`, which is exactly where nginx's
+   `root` in `deploy/nginx.conf` already points -- no copy step needed, just
+   re-run this after pulling a frontend change (see "Deploying an update"
+   below).
+9. Before any of this works end-to-end: set `DISCORD_REDIRECT_URI` and
+   `FRONTEND_URL` in the VM's `.env` to the production, nginx-proxied URLs
+   (`http://<vm-ip>/api/auth/callback` and `http://<vm-ip>`, or your domain
+   if you have one), and update the matching Redirect URL on Discord's
+   OAuth2 app page to match -- Discord rejects a mismatch outright. Restart
+   the API service after changing `.env`.
 
 ### Deploying an update (after the first-time setup above)
 
@@ -256,6 +321,14 @@ The above is one-time. To ship a code change to the already-running bot:
    `sqlite3 bot.db "PRAGMA table_info(users);"` on the VM if you want to be
    sure.
 
+Updating the API or frontend follows the same `git pull`-based flow:
+
+- **API change:** `git pull`, then `./venv/bin/pip install -r requirements.txt`
+  (if it changed) and `sudo systemctl restart lol-accountability-api`.
+- **Frontend change:** `git pull`, then `cd web && npm install && npm run
+  build`. Nothing to restart -- nginx serves `web/dist` directly off disk, so
+  the new build is live as soon as the build finishes.
+
 ## Project layout
 
 ```
@@ -278,9 +351,20 @@ lol-accountability-bot/
 │   ├── routes.py            # /tasks, /task-templates, /status, /me endpoints, all scoped to the caller's own discord_id
 │   ├── schemas.py           # Pydantic request/response models
 │   └── logs/                 # rotating log files, created on first run (gitignored)
+├── web/
+│   ├── src/
+│   │   ├── api/               # client.ts (fetch wrapper + endpoint calls) + types.ts (mirrors api/schemas.py)
+│   │   ├── context/            # AuthContext.tsx -- calls GET /me on mount, gates the whole app
+│   │   ├── components/         # Layout.tsx (nav), OddsChart.tsx (Recharts), TierBadge.tsx
+│   │   ├── pages/               # Login.tsx, Dashboard.tsx, History.tsx, Templates.tsx
+│   │   ├── lib/tier.ts          # tier labels/colors + UTC-safe date formatting
+│   │   └── App.tsx              # auth gate + react-router routes
+│   ├── vite.config.ts        # dev-server proxy: /api/* -> localhost:8001, prefix stripped
+│   └── dist/                 # npm run build output -- what nginx serves in prod (gitignored)
 ├── deploy/
 │   ├── lol-accountability-bot.service   # systemd unit for the bot
 │   ├── lol-accountability-api.service   # systemd unit for the API
+│   ├── nginx.conf                        # serves web/dist + reverse-proxies /api/ to the API
 │   └── backup_db.sh                      # daily bot.db backup script (cron this)
 ├── requirements.txt
 ├── .env.example            # template - copy to .env, never commit .env
