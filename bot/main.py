@@ -135,7 +135,11 @@ async def help_command(interaction: discord.Interaction):
         "`/ping` -- check the bot is alive.\n"
         "`/help` -- this message."
     )
-    await interaction.response.send_message(text, ephemeral=True)
+    # An embed's description caps at 4096 chars, vs. 2000 for plain message
+    # content -- this text has already outgrown 2000 once as commands were
+    # added (Discord silently 400s the whole interaction past that limit).
+    embed = discord.Embed(description=text, color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="register", description="Link your Riot ID to your Discord account")
