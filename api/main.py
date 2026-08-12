@@ -61,8 +61,15 @@ app = FastAPI(title="LoL Accountability API", lifespan=lifespan)
 # through a same-origin `/api/*` proxy, so the browser never actually makes
 # a cross-origin request during normal use -- this is just a safety net for
 # anything that talks to the API directly (e.g. hitting port 8001 without
-# going through the proxy).
-_cors_origins = list(dict.fromkeys([FRONTEND_URL, "http://localhost:5173", "http://localhost:3000"]))
+# going through the proxy). The extra localhost origins only make sense
+# when FRONTEND_URL itself is local dev -- leaving them allowed in
+# production would let a page running on someone's own local dev server
+# make credentialed requests against the live API.
+_is_local_dev = "localhost" in FRONTEND_URL or "127.0.0.1" in FRONTEND_URL
+_cors_origins = [FRONTEND_URL]
+if _is_local_dev:
+    _cors_origins += ["http://localhost:5173", "http://localhost:3000"]
+_cors_origins = list(dict.fromkeys(_cors_origins))
 
 app.add_middleware(
     CORSMiddleware,
