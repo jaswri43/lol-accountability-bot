@@ -31,7 +31,7 @@ from riot_api import (
     get_ranked_stats,
     is_remake,
 )
-from severity import apply_loss_pity, apply_win_pity
+from severity import apply_loss_pity, apply_win_pity, has_opted_into_severity
 from tone import pick_color, pick_intro, pick_severity_color, pick_severity_intro
 from views import TaskCompletionView
 
@@ -225,11 +225,12 @@ async def _check_user(bot: discord.Client, channel_id: int, user: User) -> None:
 
 
 async def _apply_win_pity(session, user: User, match: dict) -> None:
-    """Ease off a severity_mode user's pity meter on a counted ranked win.
-    No-op for non-severity users and for remakes (excluded entirely)."""
-    tracked_user = await session.get(User, user.discord_id)
-    if not tracked_user.severity_mode or is_remake(match, user.riot_puuid):
+    """Ease off pity on a counted ranked win, for users who've opted into
+    severity by tagging a Medium/High task. No-op otherwise, and for
+    remakes (excluded entirely)."""
+    if is_remake(match, user.riot_puuid) or not await has_opted_into_severity(session, user.discord_id):
         return
+    tracked_user = await session.get(User, user.discord_id)
     apply_win_pity(tracked_user)
 
 
@@ -331,11 +332,12 @@ async def _update_rank_tracking(session, user: User, queue_id: int) -> tuple[str
 async def _assign_task(
     session, bot: discord.Client, channel_id: int, user: User, match_id: str, match: dict
 ) -> None:
-    tracked_user = await session.get(User, user.discord_id)
-    counted = tracked_user.severity_mode and not is_remake(match, user.riot_puuid)
+    opted_in = await has_opted_into_severity(session, user.discord_id)
+    counted = opted_in and not is_remake(match, user.riot_puuid)
 
     tier: str | None = None
     if counted:
+        tracked_user = await session.get(User, user.discord_id)
         tier = apply_loss_pity(tracked_user)  # draws from pre-loss pity, then updates it in place
 
     description, note = await pick_task_for_user(session, user.discord_id, tier=tier)

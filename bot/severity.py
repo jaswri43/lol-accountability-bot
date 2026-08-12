@@ -1,16 +1,28 @@
 """Pity-based task-severity system.
 
-Each severity_mode user carries a `pity` float (users.pity) that rises on
-counted ranked losses and falls on counted ranked wins. Tier odds (Low/
-Medium/High) are computed fresh every time by linearly interpolating between
-a DEFAULT distribution (pity = 0) and a MAX distribution (pity >= PITY_CAP)
--- there's no separate "banked" state beyond the pity number itself.
+There's no on/off toggle -- a user is "in" severity mode the moment they've
+tagged at least one active task Medium or High via /addtask (see
+has_opted_into_severity below). Until then, every task they add defaults to
+Low, pity never accrues, and losses behave exactly like the pre-severity
+plain-random pick. This is what makes the feature invisible to anyone who
+never engages with tiers at all.
+
+Once opted in, the user's `pity` float (users.pity) rises on counted ranked
+losses and falls on counted ranked wins. Tier odds (Low/Medium/High) are
+computed fresh every time by linearly interpolating between a DEFAULT
+distribution (pity = 0) and a MAX distribution (pity >= PITY_CAP) -- there's
+no separate "banked" state beyond the pity number itself.
 
 Remakes never touch pity at all; that exclusion is enforced by callers (see
 polling.py) via riot_api.is_remake, not here.
 """
 
 import random
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db import TaskTemplate
 
 # Tier odds at pity == 0 and pity >= PITY_CAP. Tune these (and PITY_CAP) to
 # change how aggressively severity ramps up -- nothing else needs to change.
@@ -25,6 +37,20 @@ WIN_STEP = LOSS_STEP * 0.9  # 7.2
 RETAIN_FACTOR = 0.6
 
 TIERS = ("low", "medium", "high")
+
+
+async def has_opted_into_severity(session: AsyncSession, discord_id: int) -> bool:
+    """A user is in severity mode iff they have at least one active task
+    tagged Medium or High -- tagging one is the entire opt-in mechanism,
+    there's no separate toggle."""
+    result = await session.execute(
+        select(TaskTemplate.id).where(
+            TaskTemplate.discord_id == discord_id,
+            TaskTemplate.active.is_(True),
+            TaskTemplate.tier.in_(("medium", "high")),
+        )
+    )
+    return result.first() is not None
 
 
 def compute_odds(pity: float) -> dict[str, float]:

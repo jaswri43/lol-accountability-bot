@@ -2,10 +2,10 @@
 LoL Accountability Bot - entry point.
 
 Connects to Discord, registers slash commands (/register, /mute, /unmute,
-/severity, /done, /addtask, /mytasks, /removetask, /status, /stats, /help),
-registers the persistent Mark Done button view, and starts the background
-loops that assign accountability tasks after ranked losses and periodically
-remind users of ones still pending.
+/done, /addtask, /mytasks, /removetask, /status, /stats, /help), registers
+the persistent Mark Done button view, and starts the background loops that
+assign accountability tasks after ranked losses and periodically remind
+users of ones still pending.
 """
 
 import logging
@@ -21,7 +21,7 @@ from sqlalchemy import select
 from db import Task, TaskTemplate, User, async_session, complete_task, init_db
 from polling import seed_existing_matches, start_polling, start_reminders
 from riot_api import RiotAPIError, get_account_by_riot_id
-from severity import compute_odds
+from severity import compute_odds, has_opted_into_severity
 from views import TaskCompletionView
 
 load_dotenv()
@@ -107,18 +107,18 @@ async def help_command(interaction: discord.Interaction):
         "\n"
         "**Customizing your tasks**\n"
         "`/addtask description [tier]` -- add a task to your rotation (e.g. \"Do 20 pushups\"), "
-        "optionally tagged Low/Medium/High for severity mode.\n"
-        "`/mytasks` -- list your active tasks and their ids.\n"
+        "tagged Low/Medium/High (defaults to Low if you don't pick one).\n"
+        "`/mytasks` -- list your active tasks, their ids, and tiers.\n"
         "`/removetask task_id` -- deactivate one of your tasks by id.\n"
         "Once you have at least one active task, losses always draw from your rotation. "
         "With none set, losses fall back to a generic default task.\n"
         "\n"
-        "**Severity mode**\n"
-        "`/severity` -- toggle a pity-based severity system for yourself (off by default). "
-        "While on, each loss draws a Low/Medium/High severity task; the odds of a harsher "
-        "draw rise the more you've been losing and ease off as you win. Tag tasks by tier "
-        "with `/addtask` so the right kind of task gets picked; `/status` shows your current "
-        "odds while severity mode is on.\n"
+        "**Task severity**\n"
+        "There's no separate toggle -- tag a Medium or High task with `/addtask` and "
+        "that alone turns it on for you. From then on, losses draw a Low/Medium/High "
+        "task via a pity meter that rises the more you've been losing and eases off as "
+        "you win (`/status` shows your current odds). Never tag anything above Low and "
+        "nothing changes: you'll just keep getting your Low tasks like always.\n"
         "\n"
         "**Completing a task**\n"
         "`/done [task_id]` -- mark a task done. Leave `task_id` blank to complete your "
@@ -220,30 +220,6 @@ async def unmute(interaction: discord.Interaction):
     await interaction.response.send_message("Unmuted -- loss tracking is back on.", ephemeral=True)
 
 
-@bot.tree.command(name="severity", description="Toggle pity-based task severity for yourself")
-async def severity(interaction: discord.Interaction):
-    async with async_session() as session:
-        user = await session.get(User, interaction.user.id)
-        if user is None:
-            await interaction.response.send_message("You need to /register first.", ephemeral=True)
-            return
-
-        user.severity_mode = not user.severity_mode
-        new_mode = user.severity_mode
-        await session.commit()
-
-    if new_mode:
-        message = (
-            "Severity mode is now **on**. Losses now draw a Low/Medium/High severity task "
-            "based on a pity meter that builds up as you lose and eases off as you win -- "
-            "check `/status` for your current odds. Tag tasks by tier with `/addtask`."
-        )
-    else:
-        message = "Severity mode is now **off**. Losses go back to a plain random task pick."
-
-    await interaction.response.send_message(message, ephemeral=True)
-
-
 @bot.tree.command(name="done", description="Mark an accountability task as complete")
 @app_commands.describe(
     task_id="The task ID from the reminder message. Leave blank to mark your most recent pending task done."
@@ -285,7 +261,7 @@ async def done(interaction: discord.Interaction, task_id: int | None = None):
 @bot.tree.command(name="addtask", description="Add a custom accountability task to your rotation")
 @app_commands.describe(
     description="What you'll do when you lose a ranked game",
-    tier="Severity tier this task applies to when /severity mode is on (optional)",
+    tier="Severity tier for this task (defaults to Low if omitted)",
 )
 @app_commands.choices(
     tier=[
@@ -310,13 +286,13 @@ async def addtask(
         template = TaskTemplate(
             discord_id=interaction.user.id,
             description=description,
-            tier=tier.value if tier is not None else None,
+            tier=tier.value if tier is not None else "low",
         )
         session.add(template)
         await session.commit()
 
-    tier_note = f" (tier: {tier.name})" if tier is not None else ""
-    await interaction.response.send_message(f"Added task #{template.id}: **{description}**{tier_note}")
+    tier_label = tier.name if tier is not None else "Low"
+    await interaction.response.send_message(f"Added task #{template.id}: **{description}** (tier: {tier_label})")
 
 
 @bot.tree.command(name="mytasks", description="List your active accountability task templates")
@@ -360,6 +336,7 @@ async def removetask(interaction: discord.Interaction, task_id: int):
 async def status(interaction: discord.Interaction):
     async with async_session() as session:
         user = await session.get(User, interaction.user.id)
+        opted_in = await has_opted_into_severity(session, interaction.user.id)
         result = await session.execute(
             select(Task)
             .where(Task.discord_id == interaction.user.id, Task.status == "pending")
@@ -379,10 +356,10 @@ async def status(interaction: discord.Interaction):
         )
         embed = discord.Embed(title="Pending Tasks", description=lines, color=discord.Color.blurple())
 
-    if user is not None and user.severity_mode:
+    if user is not None and opted_in:
         odds = compute_odds(user.pity)
         embed.add_field(
-            name="Severity Mode",
+            name="Task Severity",
             value=f"Current odds: Low {odds['low']:.0%} / Medium {odds['medium']:.0%} / High {odds['high']:.0%}",
             inline=False,
         )

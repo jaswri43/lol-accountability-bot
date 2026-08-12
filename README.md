@@ -9,17 +9,22 @@ assigns accountability tasks after a loss, completable via `/done` or the
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
 
-Phase 9: pity-based task severity.
+Phase 9: pity-based task severity, always on -- no toggle command. A user
+opts in purely by tagging a task Medium or High; until they do, everything
+behaves exactly as it did before this feature existed.
 
-- `/severity` toggles a per-user opt-in "severity mode" (off by default,
-  `users.severity_mode`). While off, losses behave exactly as before:
-  a random pick from the user's active `task_templates`, no tiers, no pity
-  tracking at all.
-- While on, each **counted** ranked loss draws a Low/Medium/High severity
-  tier and assigns a task from templates tagged with that tier
-  (`task_templates.tier`, set via `/addtask description tier`), falling back
-  to any active template -- with a note in the task message -- if none are
-  tagged for the drawn tier yet.
+- `/addtask description [tier]` tags a task Low/Medium/High, defaulting to
+  Low if omitted (`task_templates.tier`; existing untagged rows were
+  backfilled to Low too). `severity.has_opted_into_severity()` is the entire
+  opt-in mechanism: true iff the user has at least one active Medium/High
+  task. No separate flag to flip.
+- Not opted in -> a ranked loss picks randomly among the user's active
+  templates exactly like pre-severity code did (which, since everything's
+  tagged Low by default, just means their Low tasks), pity stays frozen at
+  0, and the loss embed keeps its original streak-based tone/color. Opted
+  in -> each **counted** loss draws a Low/Medium/High tier and assigns a
+  task tagged with it, falling back to any active template -- with a note
+  in the task message -- if none are tagged for the drawn tier yet.
 - The draw is weighted by a per-user `pity` float (`users.pity`) that rises
   by `LOSS_STEP` (8.0) on a counted loss and falls by `WIN_STEP` (7.2,
   floored at 0) on a counted win. Odds are computed fresh each time by
@@ -33,9 +38,10 @@ Phase 9: pity-based task severity.
   actually change LP still count.
 - The raw pity number, odds, and tier draw are never shown in the loss/task
   message itself -- only the tone (`bot/tone.py`'s tier-based intro/color
-  variants, light for Low up to emphatic for High) hints at severity.
-  `/status` shows a severity-mode user's current approximate odds (e.g.
-  "Low 48% / Medium 34% / High 18%") without exposing the raw pity value.
+  variants, light for Low up to emphatic for High) hints at severity, and
+  only for opted-in users. `/status` shows an opted-in user's current
+  approximate odds (e.g. "Low 48% / Medium 34% / High 18%") without
+  exposing the raw pity value.
 
 Phase 8: match context, rank tracking, and persistent buttons.
 

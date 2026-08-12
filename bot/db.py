@@ -34,10 +34,12 @@ class User(Base):
     flex_tier: Mapped[str | None] = mapped_column(nullable=True)
     flex_rank: Mapped[str | None] = mapped_column(nullable=True)
     flex_lp: Mapped[int | None] = mapped_column(nullable=True)
-    # Pity meter driving the task-severity system (see bot/severity.py) and
-    # the per-user opt-in toggle for it. Unused/frozen for users who never
-    # turn severity_mode on.
+    # Pity meter driving the task-severity system (see bot/severity.py).
+    # Frozen at 0 until the user tags a Medium/High task with /addtask --
+    # see severity.has_opted_into_severity, there's no separate toggle.
     pity: Mapped[float] = mapped_column(default=0.0)
+    # Unused as of the always-on severity redesign -- see init_db() below
+    # for why the column itself is kept rather than dropped.
     severity_mode: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -74,9 +76,11 @@ class TaskTemplate(Base):
     description: Mapped[str] = mapped_column(String)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
-    # Severity tier this task is tagged for ("low"/"medium"/"high"), used
-    # when its owner has severity_mode on. Nullable: untagged tasks are
-    # tier-agnostic and only used as a fallback in severity mode.
+    # Severity tier this task is tagged for ("low"/"medium"/"high") -- new
+    # rows always get one (main.py defaults to "low"), and init_db() below
+    # backfills any pre-existing NULL rows to "low" too. Still nullable at
+    # the schema level since that backfill runs at startup, not atomically
+    # with column creation.
     tier: Mapped[str | None] = mapped_column(nullable=True)
 
 
@@ -93,8 +97,16 @@ async def init_db() -> None:
         await _add_column_if_missing(conn, "users", "flex_rank", "VARCHAR")
         await _add_column_if_missing(conn, "users", "flex_lp", "INTEGER")
         await _add_column_if_missing(conn, "users", "pity", "REAL DEFAULT 0")
+        # severity_mode is unused now -- tier tagging itself is the opt-in
+        # (see severity.has_opted_into_severity) -- but the column is left
+        # in place rather than dropped; SQLite DROP COLUMN support is new
+        # enough that it's not worth the risk for an unused, harmless column.
         await _add_column_if_missing(conn, "users", "severity_mode", "BOOLEAN DEFAULT 0")
         await _add_column_if_missing(conn, "task_templates", "tier", "VARCHAR")
+        # One-time backfill: tasks added before tiers existed, or added
+        # without specifying one, default to "low". Idempotent -- a no-op
+        # once no NULL rows remain.
+        await conn.execute(text("UPDATE task_templates SET tier = 'low' WHERE tier IS NULL"))
 
 
 async def _add_column_if_missing(conn, table: str, column: str, column_type: str) -> None:
