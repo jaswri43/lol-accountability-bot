@@ -10,8 +10,9 @@ assigns accountability tasks after a loss, completable via `/done` or the
 Deployment below).
 
 Phase 11: `web/` -- a React + Vite + Tailwind dashboard for the API, fully
-actionable (not read-only). Not deployed to the VM yet (see `deploy/nginx.conf`
-when ready); local dev is fully tested.
+actionable (not read-only). **Live** at `http://150.136.211.236` alongside
+the bot, served by nginx (`deploy/nginx.conf`) with the API reverse-proxied
+under `/api/`.
 
 - Three views behind a Discord-login gate: **Dashboard** (username + linked
   Riot ID, pending task count, a Recharts odds bar chart, and pending tasks
@@ -269,8 +270,27 @@ credentials.
    ```
    If the repo isn't cloned at `/home/ubuntu/lol-accountability-bot`, edit
    the `root` path in `deploy/nginx.conf` (or the copy in
-   `sites-available/`) to match before running `nginx -t`. Make sure port 80
-   is open in the OCI security list (it usually already is).
+   `sites-available/`) to match before running `nginx -t`.
+
+   Two separate firewalls have to allow port 80, not just one -- both bit us
+   on the first deploy:
+   - **OCI Security List**: console -> Networking -> Virtual Cloud Networks
+     -> your VCN -> the *Default* Security List (not the private-subnet
+     one) -> Add Ingress Rules -> source `0.0.0.0/0`, TCP, port 80.
+   - **The VM's own `iptables`**: Oracle's base Ubuntu image ships a
+     REJECT-everything-except-port-22 rule. Check with `sudo iptables -L
+     INPUT -n --line-numbers`; if port 80 isn't ACCEPTed before the REJECT
+     line, insert it: `sudo iptables -I INPUT <line-before-reject> -p tcp -m
+     state --state NEW --dport 80 -j ACCEPT`, then `sudo
+     netfilter-persistent save` (this VM has `iptables-persistent`) so it
+     survives a reboot.
+
+   Also: nginx's worker runs as `www-data`, which can't traverse into
+   `/home/ubuntu/...` by default (`750` permissions) even though everything
+   under it is world-readable -- shows up as `stat() ... Permission denied`
+   in `/var/log/nginx/error.log` and a 500 on every request despite `nginx
+   -t` passing. Fix once: `chmod o+x /home/ubuntu` (traversal only, doesn't
+   expose directory listing).
 8. **Build and deploy the frontend:**
    ```bash
    cd web
