@@ -16,6 +16,7 @@ from discord.ext import tasks
 from sqlalchemy import or_, select
 
 from accountability import pick_task_for_user
+from cosmetic import number_items
 from db import ProcessedMatch, Task, User, async_session
 from ranked import describe_change, format_rank, format_tier_rank
 from riot_api import (
@@ -142,7 +143,20 @@ async def _send_reminders(bot: discord.Client, channel_id: int) -> None:
             by_user.setdefault(task.discord_id, []).append(task)
 
         for discord_id, tasks_for_user in by_user.items():
-            lines = "\n".join(f"- #{t.id}: {t.task_description}" for t in tasks_for_user)
+            # Number against the user's full pending list (same set/order
+            # /status and /done use), not just this due-for-reminder
+            # subset -- otherwise a number shown here could resolve to a
+            # different task via /done than the one it's actually next to.
+            all_pending_result = await session.execute(
+                select(Task)
+                .where(Task.discord_id == discord_id, Task.status == "pending")
+                .order_by(Task.created_at)
+            )
+            number_by_id = {t.id: n for n, t in number_items(all_pending_result.scalars().all())}
+
+            lines = "\n".join(
+                f"- #{number_by_id[t.id]}: {t.task_description}" for t in tasks_for_user
+            )
             embed = discord.Embed(
                 title="Task Reminder",
                 description=f"You still have {len(tasks_for_user)} pending accountability task(s):\n{lines}",
@@ -372,12 +386,23 @@ async def _assign_task(
     else:
         intro, color = pick_intro(streak), pick_color(streak)
 
+    # Cosmetic position within the user's current pending list (same
+    # set/order /status and /done use) -- shown instead of task.id so the
+    # `/done number:` hint below actually resolves to this task.
+    pending_result = await session.execute(
+        select(Task)
+        .where(Task.discord_id == user.discord_id, Task.status == "pending")
+        .order_by(Task.created_at)
+    )
+    number_by_id = {t.id: n for n, t in number_items(pending_result.scalars().all())}
+    task_number = number_by_id[task.id]
+
     embed = discord.Embed(
         title="Ranked Loss",
         description=(
             f"{intro}\n\n"
-            f"**Task #{task.id}:** {description}\n\n"
-            f"Mark it done with the button below or `/done task_id:{task.id}`.{extra_note}"
+            f"**Task #{task_number}:** {description}\n\n"
+            f"Mark it done with the button below or `/done number:{task_number}`.{extra_note}"
         ),
         color=color,
     )

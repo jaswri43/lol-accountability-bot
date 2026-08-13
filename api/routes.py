@@ -15,10 +15,34 @@ from bot_bridge import (
     complete_task,
     compute_odds,
     has_opted_into_severity,
+    number_items,
 )
 from schemas import MeOut, StatusOut, TaskOut, TaskTemplateCreate, TaskTemplateOut
 
 router = APIRouter()
+
+
+def _task_out(number: int, task: Task) -> TaskOut:
+    return TaskOut(
+        number=number,
+        id=task.id,
+        match_id=task.match_id,
+        task_description=task.task_description,
+        status=task.status,
+        created_at=task.created_at,
+        completed_at=task.completed_at,
+    )
+
+
+def _template_out(number: int | None, template: TaskTemplate) -> TaskTemplateOut:
+    return TaskTemplateOut(
+        number=number,
+        id=template.id,
+        description=template.description,
+        active=template.active,
+        tier=template.tier,
+        created_at=template.created_at,
+    )
 
 
 @router.get("/tasks", response_model=list[TaskOut])
@@ -32,7 +56,8 @@ async def list_tasks(
             query = query.where(Task.status == "pending")
         query = query.order_by(Task.created_at.desc())
         result = await session.execute(query)
-        return result.scalars().all()
+        tasks = result.scalars().all()
+        return [_task_out(n, t) for n, t in number_items(tasks)]
 
 
 @router.post("/tasks/{task_id}/complete", response_model=TaskOut)
@@ -47,7 +72,14 @@ async def complete_task_route(task_id: int, user: CurrentUser = Depends(get_curr
         await complete_task(session, task)
         await session.commit()
         await session.refresh(task)
-        return task
+
+        # Position within the full history list (same order History shows),
+        # since that's the list this task belongs to now that it's done.
+        history_result = await session.execute(
+            select(Task).where(Task.discord_id == user.discord_id).order_by(Task.created_at.desc())
+        )
+        number_by_id = {t.id: n for n, t in number_items(history_result.scalars().all())}
+        return _task_out(number_by_id[task.id], task)
 
 
 @router.get("/task-templates", response_model=list[TaskTemplateOut])
@@ -58,7 +90,13 @@ async def list_task_templates(user: CurrentUser = Depends(get_current_user)):
             .where(TaskTemplate.discord_id == user.discord_id)
             .order_by(TaskTemplate.id)
         )
-        return result.scalars().all()
+        templates = result.scalars().all()
+
+        # Only active templates get numbered -- matches /mytasks and
+        # /removetask in Discord, which never show or accept a number for
+        # an inactive (removed) one.
+        number_by_id = {t.id: n for n, t in number_items([t for t in templates if t.active])}
+        return [_template_out(number_by_id.get(t.id), t) for t in templates]
 
 
 @router.post("/task-templates", response_model=TaskTemplateOut, status_code=201)
@@ -76,7 +114,14 @@ async def create_task_template(
         session.add(template)
         await session.commit()
         await session.refresh(template)
-        return template
+
+        active_result = await session.execute(
+            select(TaskTemplate)
+            .where(TaskTemplate.discord_id == user.discord_id, TaskTemplate.active.is_(True))
+            .order_by(TaskTemplate.id)
+        )
+        number_by_id = {t.id: n for n, t in number_items(active_result.scalars().all())}
+        return _template_out(number_by_id[template.id], template)
 
 
 @router.delete("/task-templates/{template_id}", status_code=204)

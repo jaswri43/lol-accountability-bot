@@ -118,6 +118,9 @@ export function Templates() {
             {templates.map((template) => (
               <li key={template.id} className="flex items-center justify-between gap-4 px-5 py-4">
                 <div className="flex items-center gap-3">
+                  <span className="w-6 shrink-0 text-sm text-slate-400">
+                    {template.number ?? "—"}
+                  </span>
                   <span
                     className={`text-sm ${
                       template.active ? "text-slate-900" : "text-slate-400 line-through"

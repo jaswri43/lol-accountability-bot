@@ -9,6 +9,31 @@ assigns accountability tasks after a loss, completable via `/done` or the
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
 
+Phase 12: cosmetic task/task-template numbering. The real database `id`
+(autoincrementing, never reused) still drives everything internally --
+foreign keys, button `custom_id`s, `POST /tasks/{id}/complete`, `DELETE
+/task-templates/{id}` -- but every place that *shows or asks a human to
+type* a number now uses a small 1, 2, 3... position computed fresh each
+time, via `bot/cosmetic.py`'s `number_items()`/`resolve_cosmetic_number()`
+(re-exported through `api/bot_bridge.py`). Nothing is stored -- ask again a
+moment later and the numbers may have shifted if something in between was
+completed/removed, same as any todo-list app.
+
+- `/mytasks` numbers your active templates 1..N; `/removetask number`
+  re-resolves that position against your current active list at the
+  moment you run it, not a remembered id -- remove the 2nd one and what
+  was 3rd becomes 2nd on the next `/mytasks`.
+- `/status`, `/done [number]`, the loss-announcement embed, and task
+  reminders all number against the same set (your current pending tasks,
+  oldest first) so a number shown in any one of them resolves correctly
+  via `/done` in any of the others. The Mark Done **button** never uses a
+  number at all -- it already knows which task via the message it's
+  attached to, so it's untouched by any of this.
+- `GET /tasks` and `GET /task-templates` include a `number` field alongside
+  `id` (`number: null` for an inactive template, since those aren't part of
+  Discord's numbered list either). The dashboard displays `number`;
+  `id` is only ever used internally for the action routes.
+
 Phase 11: `web/` -- a React + Vite + Tailwind dashboard for the API, fully
 actionable (not read-only). **Live** at
 `https://lol-accountability.duckdns.org` alongside the bot, served by nginx

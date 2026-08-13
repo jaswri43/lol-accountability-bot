@@ -18,6 +18,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from sqlalchemy import select
 
+from cosmetic import number_items, resolve_cosmetic_number
 from db import Task, TaskTemplate, User, async_session, complete_task, init_db
 from polling import seed_existing_matches, start_polling, start_reminders
 from riot_api import RiotAPIError, get_account_by_riot_id
@@ -108,8 +109,11 @@ async def help_command(interaction: discord.Interaction):
         "**Customizing your tasks**\n"
         "`/addtask description [tier]` -- add a task to your rotation (e.g. \"Do 20 pushups\"), "
         "tagged Low/Medium/High (defaults to Low if you don't pick one).\n"
-        "`/mytasks` -- list your active tasks, their ids, and tiers.\n"
-        "`/removetask task_id` -- deactivate one of your tasks by id.\n"
+        "`/mytasks` -- list your active tasks, numbered, with tiers. The numbers are "
+        "cosmetic -- just your current 1, 2, 3... position, not a stored id -- so they "
+        "shift if you remove one; always check `/mytasks` for the current numbers.\n"
+        "`/removetask number` -- deactivate one of your tasks by the number `/mytasks` "
+        "showed it.\n"
         "Once you have at least one active task, losses always draw from your rotation. "
         "With none set, losses fall back to a generic default task.\n"
         "\n"
@@ -121,8 +125,9 @@ async def help_command(interaction: discord.Interaction):
         "nothing changes: you'll just keep getting your Low tasks like always.\n"
         "\n"
         "**Completing a task**\n"
-        "`/done [task_id]` -- mark a task done. Leave `task_id` blank to complete your "
-        "most recent pending task. Or click the **Mark Done** button on the task's "
+        "`/done [number]` -- mark a task done, by the number `/status` or its announcement "
+        "message showed it. Leave blank to complete your most recent pending task. Or click "
+        "the **Mark Done** button on the task's "
         "announcement message in the channel -- only the person the task belongs to can "
         "complete it that way. A pending task left untouched for a while gets an "
         "occasional reminder ping in the channel.\n"
@@ -222,40 +227,43 @@ async def unmute(interaction: discord.Interaction):
 
 @bot.tree.command(name="done", description="Mark an accountability task as complete")
 @app_commands.describe(
-    task_id="The task ID from the reminder message. Leave blank to mark your most recent pending task done."
+    number="The task number shown in /status or the task's announcement message. Leave blank to mark your most recent pending task done."
 )
-async def done(interaction: discord.Interaction, task_id: int | None = None):
+async def done(interaction: discord.Interaction, number: int | None = None):
     async with async_session() as session:
-        if task_id is not None:
-            task = await session.get(Task, task_id)
-            if task is None or task.discord_id != interaction.user.id:
+        # Same set/order /status shows -- resolving `number` against this
+        # (rather than a raw session.get by real id) is what makes it a
+        # cosmetic position instead of the database id.
+        result = await session.execute(
+            select(Task)
+            .where(Task.discord_id == interaction.user.id, Task.status == "pending")
+            .order_by(Task.created_at)
+        )
+        pending = result.scalars().all()
+
+        if number is not None:
+            task = resolve_cosmetic_number(pending, number)
+            if task is None:
                 await interaction.response.send_message(
-                    f"No task #{task_id} found for you.", ephemeral=True
+                    f"No task #{number} found for you. Check `/status` for your current list.",
+                    ephemeral=True,
                 )
                 return
         else:
-            result = await session.execute(
-                select(Task)
-                .where(Task.discord_id == interaction.user.id, Task.status == "pending")
-                .order_by(Task.created_at.desc())
-            )
-            task = result.scalars().first()
-            if task is None:
+            if not pending:
                 await interaction.response.send_message(
                     "You don't have any pending accountability tasks.", ephemeral=True
                 )
                 return
-
-        if task.status != "pending":
-            await interaction.response.send_message(
-                f"Task #{task.id} is already marked **{task.status}**.", ephemeral=True
-            )
-            return
+            task = pending[-1]  # most recent (ascending order, so last)
 
         await complete_task(session, task)
         await session.commit()
 
-    await interaction.response.send_message(f"Task #{task.id} marked done: **{task.task_description}**")
+    if number is not None:
+        await interaction.response.send_message(f"Task #{number} marked done: **{task.task_description}**")
+    else:
+        await interaction.response.send_message(f"Marked done: **{task.task_description}**")
 
 
 @bot.tree.command(name="addtask", description="Add a custom accountability task to your rotation")
@@ -291,8 +299,18 @@ async def addtask(
         session.add(template)
         await session.commit()
 
+        # Same set/order /mytasks and /removetask use, so the number shown
+        # here is the one you'd actually use to /removetask it later.
+        result = await session.execute(
+            select(TaskTemplate)
+            .where(TaskTemplate.discord_id == interaction.user.id, TaskTemplate.active.is_(True))
+            .order_by(TaskTemplate.id)
+        )
+        active_templates = result.scalars().all()
+        number = next(n for n, t in number_items(active_templates) if t.id == template.id)
+
     tier_label = tier.name if tier is not None else "Low"
-    await interaction.response.send_message(f"Added task #{template.id}: **{description}** (tier: {tier_label})")
+    await interaction.response.send_message(f"Added task #{number}: **{description}** (tier: {tier_label})")
 
 
 @bot.tree.command(name="mytasks", description="List your active accountability task templates")
@@ -311,25 +329,36 @@ async def mytasks(interaction: discord.Interaction):
         )
         return
 
-    lines = [f"#{t.id}: {t.description}" + (f" [{t.tier}]" if t.tier else "") for t in templates]
+    lines = [
+        f"#{n}: {t.description}" + (f" [{t.tier}]" if t.tier else "") for n, t in number_items(templates)
+    ]
     await interaction.response.send_message("Your active tasks:\n" + "\n".join(lines), ephemeral=True)
 
 
 @bot.tree.command(name="removetask", description="Deactivate one of your custom accountability tasks")
-@app_commands.describe(task_id="The task template id shown in /mytasks")
-async def removetask(interaction: discord.Interaction, task_id: int):
+@app_commands.describe(number="The task number shown in /mytasks")
+async def removetask(interaction: discord.Interaction, number: int):
     async with async_session() as session:
-        template = await session.get(TaskTemplate, task_id)
-        if template is None or template.discord_id != interaction.user.id:
+        # Recomputed fresh, same set/order /mytasks uses -- `number` only
+        # ever means "your Nth active task right now", never a stored id.
+        result = await session.execute(
+            select(TaskTemplate)
+            .where(TaskTemplate.discord_id == interaction.user.id, TaskTemplate.active.is_(True))
+            .order_by(TaskTemplate.id)
+        )
+        templates = result.scalars().all()
+        template = resolve_cosmetic_number(templates, number)
+        if template is None:
             await interaction.response.send_message(
-                f"No task template #{task_id} found for you.", ephemeral=True
+                f"No task #{number} found for you. Check `/mytasks` for your current list.",
+                ephemeral=True,
             )
             return
 
         template.active = False
         await session.commit()
 
-    await interaction.response.send_message(f"Removed task #{task_id}: **{template.description}**")
+    await interaction.response.send_message(f"Removed task #{number}: **{template.description}**")
 
 
 @bot.tree.command(name="status", description="Show your currently pending accountability tasks")
@@ -351,8 +380,8 @@ async def status(interaction: discord.Interaction):
         )
     else:
         lines = "\n".join(
-            f"#{t.id}: **{t.task_description}** (assigned {t.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
-            for t in pending
+            f"#{n}: **{t.task_description}** (assigned {t.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
+            for n, t in number_items(pending)
         )
         embed = discord.Embed(title="Pending Tasks", description=lines, color=discord.Color.blurple())
 

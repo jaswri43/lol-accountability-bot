@@ -97,7 +97,9 @@ export function Dashboard() {
             {tasks.map((task) => (
               <li key={task.id} className="flex items-center justify-between gap-4 px-5 py-4">
                 <div>
-                  <p className="text-sm font-medium text-slate-900">{task.task_description}</p>
+                  <p className="text-sm font-medium text-slate-900">
+                    <span className="text-slate-400">#{task.number}</span> {task.task_description}
+                  </p>
                   <p className="mt-0.5 text-xs text-slate-400">
                     Assigned {formatDate(task.created_at)}
                   </p>

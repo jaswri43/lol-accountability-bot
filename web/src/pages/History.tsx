@@ -52,6 +52,9 @@ export function History() {
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    #
+                  </th>
+                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Task
                   </th>
                   <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -68,6 +71,7 @@ export function History() {
               <tbody className="divide-y divide-slate-100">
                 {tasks.map((task) => (
                   <tr key={task.id}>
+                    <td className="px-5 py-3 text-sm text-slate-400">{task.number}</td>
                     <td className="px-5 py-3 text-sm text-slate-900">{task.task_description}</td>
                     <td className="px-5 py-3">
                       <StatusBadge status={task.status} />

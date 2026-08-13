@@ -4,6 +4,9 @@ export type Tier = "low" | "medium" | "high";
 
 export interface Task {
   id: number;
+  // Cosmetic 1-indexed position within the list this came back in (see
+  // bot/cosmetic.py) -- display only, never send this to an API route.
+  number: number;
   match_id: string;
   task_description: string;
   status: string;
@@ -13,6 +16,9 @@ export interface Task {
 
 export interface TaskTemplate {
   id: number;
+  // Cosmetic position among the user's ACTIVE templates only -- null for
+  // inactive/removed ones, which aren't part of that numbered list.
+  number: number | null;
   description: string;
   active: boolean;
   tier: Tier | null;

@@ -41,8 +41,12 @@ class TaskCompletionView(discord.ui.View):
                 return
 
             if task.status != "pending":
+                # No cosmetic number shown here -- a non-pending task isn't
+                # part of the numbered pending list anymore, and there's
+                # nothing else the user needs a number for at this point
+                # (they're looking right at the message).
                 await interaction.response.send_message(
-                    f"Task #{task.id} is already marked **{task.status}**.", ephemeral=True
+                    f"This task is already marked **{task.status}**.", ephemeral=True
                 )
                 return
 

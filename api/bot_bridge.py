@@ -26,6 +26,7 @@ from db import (
 )
 from severity import compute_odds, has_opted_into_severity
 from accountability import DEFAULT_TASK_DESCRIPTION
+from cosmetic import number_items, resolve_cosmetic_number
 
 __all__ = [
     "Task",
@@ -37,4 +38,6 @@ __all__ = [
     "compute_odds",
     "has_opted_into_severity",
     "DEFAULT_TASK_DESCRIPTION",
+    "number_items",
+    "resolve_cosmetic_number",
 ]

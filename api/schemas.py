@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 
 class TaskOut(BaseModel):
     id: int
+    # Cosmetic 1-indexed position within the list this task was returned
+    # in (see bot/cosmetic.py) -- NOT a stored value, just this response's
+    # ordering. Only `id` is ever valid for POST /tasks/{id}/complete.
+    number: int
     match_id: str
     task_description: str
     status: str
@@ -19,6 +23,11 @@ class TaskOut(BaseModel):
 
 class TaskTemplateOut(BaseModel):
     id: int
+    # Cosmetic position among the user's ACTIVE templates only (matching
+    # /mytasks and /removetask in Discord) -- null for inactive/removed
+    # templates, which aren't part of that numbered list. Only `id` is
+    # ever valid for DELETE /task-templates/{id}.
+    number: int | None
     description: str
     active: bool
     tier: str | None
