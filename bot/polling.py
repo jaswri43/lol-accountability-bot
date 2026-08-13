@@ -16,7 +16,7 @@ from discord.ext import tasks
 from sqlalchemy import or_, select
 
 from accountability import pick_task_for_user
-from cosmetic import number_items
+from cosmetic import number_items, sort_by_tier_then_date
 from db import ProcessedMatch, Task, User, async_session
 from ranked import describe_change, format_rank, format_tier_rank
 from riot_api import (
@@ -152,7 +152,8 @@ async def _send_reminders(bot: discord.Client, channel_id: int) -> None:
                 .where(Task.discord_id == discord_id, Task.status == "pending")
                 .order_by(Task.created_at)
             )
-            number_by_id = {t.id: n for n, t in number_items(all_pending_result.scalars().all())}
+            all_pending = sort_by_tier_then_date(all_pending_result.scalars().all())
+            number_by_id = {t.id: n for n, t in number_items(all_pending)}
 
             lines = "\n".join(
                 f"- #{number_by_id[t.id]}: {t.task_description}" for t in tasks_for_user
@@ -355,7 +356,18 @@ async def _assign_task(
         tier = apply_loss_pity(tracked_user)  # draws from pre-loss pity, then updates it in place
 
     description, note = await pick_task_for_user(session, user.discord_id, tier=tier)
-    task = Task(discord_id=user.discord_id, match_id=match_id, task_description=description)
+    # Stores the drawn severity tier (what the pity system decided this
+    # loss was worth), not necessarily the tier of the specific template
+    # `description` came from -- pick_task_for_user can fall back to a
+    # different tier's template (note == "tier_fallback") when none exist
+    # for the drawn one yet. "low" for non-opted-in/non-counted losses,
+    # matching task_templates' own default.
+    task = Task(
+        discord_id=user.discord_id,
+        match_id=match_id,
+        task_description=description,
+        tier=tier if tier is not None else "low",
+    )
     session.add(task)
     await session.flush()  # populate task.id (and let the streak query below see this match)
 
@@ -394,7 +406,8 @@ async def _assign_task(
         .where(Task.discord_id == user.discord_id, Task.status == "pending")
         .order_by(Task.created_at)
     )
-    number_by_id = {t.id: n for n, t in number_items(pending_result.scalars().all())}
+    pending_for_numbering = sort_by_tier_then_date(pending_result.scalars().all())
+    number_by_id = {t.id: n for n, t in number_items(pending_for_numbering)}
     task_number = number_by_id[task.id]
 
     embed = discord.Embed(

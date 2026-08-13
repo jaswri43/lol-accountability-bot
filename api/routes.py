@@ -16,6 +16,7 @@ from bot_bridge import (
     compute_odds,
     has_opted_into_severity,
     number_items,
+    sort_by_tier_then_date,
 )
 from schemas import MeOut, StatusOut, TaskOut, TaskTemplateCreate, TaskTemplateOut
 
@@ -57,6 +58,13 @@ async def list_tasks(
         query = query.order_by(Task.created_at.desc())
         result = await session.execute(query)
         tasks = result.scalars().all()
+
+        # Pending matches /status's tier-grouped order; history stays
+        # most-recent-first, unchanged -- it's a log of what happened, not
+        # a worklist to sort by severity.
+        if status == "pending":
+            tasks = sort_by_tier_then_date(tasks)
+
         return [_task_out(n, t) for n, t in number_items(tasks)]
 
 
@@ -90,7 +98,11 @@ async def list_task_templates(user: CurrentUser = Depends(get_current_user)):
             .where(TaskTemplate.discord_id == user.discord_id)
             .order_by(TaskTemplate.id)
         )
-        templates = result.scalars().all()
+        # Tier-grouped, same as /mytasks -- applied to the whole list
+        # (active + inactive together) so the dashboard's display order
+        # matches Discord's for the active ones, rather than active and
+        # inactive rows interleaving strictly by creation date.
+        templates = sort_by_tier_then_date(result.scalars().all())
 
         # Only active templates get numbered -- matches /mytasks and
         # /removetask in Discord, which never show or accept a number for
@@ -120,7 +132,8 @@ async def create_task_template(
             .where(TaskTemplate.discord_id == user.discord_id, TaskTemplate.active.is_(True))
             .order_by(TaskTemplate.id)
         )
-        number_by_id = {t.id: n for n, t in number_items(active_result.scalars().all())}
+        active_templates = sort_by_tier_then_date(active_result.scalars().all())
+        number_by_id = {t.id: n for n, t in number_items(active_templates)}
         return _template_out(number_by_id[template.id], template)
 
 

@@ -18,7 +18,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from sqlalchemy import select
 
-from cosmetic import number_items, resolve_cosmetic_number
+from cosmetic import number_items, resolve_cosmetic_number, sort_by_tier_then_date
 from db import Task, TaskTemplate, User, async_session, complete_task, init_db
 from polling import seed_existing_matches, start_polling, start_reminders
 from riot_api import RiotAPIError, get_account_by_riot_id
@@ -242,7 +242,10 @@ async def done(interaction: discord.Interaction, number: int | None = None):
         pending = result.scalars().all()
 
         if number is not None:
-            task = resolve_cosmetic_number(pending, number)
+            # Resolve against the same tier-grouped order /status shows,
+            # not the raw date order -- `pending` itself stays date order
+            # below for "most recent" regardless of tier.
+            task = resolve_cosmetic_number(sort_by_tier_then_date(pending), number)
             if task is None:
                 await interaction.response.send_message(
                     f"No task #{number} found for you. Check `/status` for your current list.",
@@ -306,7 +309,7 @@ async def addtask(
             .where(TaskTemplate.discord_id == interaction.user.id, TaskTemplate.active.is_(True))
             .order_by(TaskTemplate.id)
         )
-        active_templates = result.scalars().all()
+        active_templates = sort_by_tier_then_date(result.scalars().all())
         number = next(n for n, t in number_items(active_templates) if t.id == template.id)
 
     tier_label = tier.name if tier is not None else "Low"
@@ -321,7 +324,7 @@ async def mytasks(interaction: discord.Interaction):
             .where(TaskTemplate.discord_id == interaction.user.id, TaskTemplate.active.is_(True))
             .order_by(TaskTemplate.id)
         )
-        templates = result.scalars().all()
+        templates = sort_by_tier_then_date(result.scalars().all())
 
     if not templates:
         await interaction.response.send_message(
@@ -346,7 +349,7 @@ async def removetask(interaction: discord.Interaction, number: int):
             .where(TaskTemplate.discord_id == interaction.user.id, TaskTemplate.active.is_(True))
             .order_by(TaskTemplate.id)
         )
-        templates = result.scalars().all()
+        templates = sort_by_tier_then_date(result.scalars().all())
         template = resolve_cosmetic_number(templates, number)
         if template is None:
             await interaction.response.send_message(
@@ -371,7 +374,7 @@ async def status(interaction: discord.Interaction):
             .where(Task.discord_id == interaction.user.id, Task.status == "pending")
             .order_by(Task.created_at)
         )
-        pending = result.scalars().all()
+        pending = sort_by_tier_then_date(result.scalars().all())
 
     if not pending:
         embed = discord.Embed(

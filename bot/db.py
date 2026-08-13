@@ -66,6 +66,13 @@ class Task(Base):
     # added, and only for tasks that made it into the announce channel.
     message_id: Mapped[int | None] = mapped_column(nullable=True)
     last_reminded_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Severity tier drawn when this task was assigned ("low"/"medium"/
+    # "high") -- persisted (mirroring task_templates.tier) so tasks can be
+    # sorted by severity, not just chosen by it. A task assigned to a
+    # non-opted-in user, or predating this column, is "low" (see
+    # init_db()'s backfill below), matching the rest of the app's "no tier
+    # = behaves like Low" convention.
+    tier: Mapped[str | None] = mapped_column(nullable=True)
 
 
 class TaskTemplate(Base):
@@ -103,10 +110,12 @@ async def init_db() -> None:
         # enough that it's not worth the risk for an unused, harmless column.
         await _add_column_if_missing(conn, "users", "severity_mode", "BOOLEAN DEFAULT 0")
         await _add_column_if_missing(conn, "task_templates", "tier", "VARCHAR")
-        # One-time backfill: tasks added before tiers existed, or added
+        await _add_column_if_missing(conn, "tasks", "tier", "VARCHAR")
+        # One-time backfills: rows added before tiers existed, or added
         # without specifying one, default to "low". Idempotent -- a no-op
         # once no NULL rows remain.
         await conn.execute(text("UPDATE task_templates SET tier = 'low' WHERE tier IS NULL"))
+        await conn.execute(text("UPDATE tasks SET tier = 'low' WHERE tier IS NULL"))
 
 
 async def _add_column_if_missing(conn, table: str, column: str, column_type: str) -> None:
