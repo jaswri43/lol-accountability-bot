@@ -40,3 +40,70 @@ export interface Me {
   registered_at: string | null;
   muted: boolean;
 }
+
+export interface RankQueue {
+  tier: string;
+  rank: string;
+  lp: number;
+  formatted: string;
+  // Oldest-first lp_after values, capped to a handful of recent games --
+  // sparkline data, not a full chart. Empty until enough games exist.
+  trend: number[];
+}
+
+export interface WinLoss {
+  wins: number;
+  losses: number;
+  win_rate: number;
+}
+
+export interface Streak {
+  direction: "win" | "loss";
+  count: number;
+}
+
+export interface TierStat {
+  count: number;
+  completed: number;
+  completion_rate: number;
+}
+
+export interface ActivityPoint {
+  date: string;
+  count: number;
+}
+
+export interface StatsOverview {
+  solo_rank: RankQueue | null;
+  flex_rank: RankQueue | null;
+  win_loss_overall: WinLoss;
+  win_loss_solo: WinLoss;
+  win_loss_flex: WinLoss;
+  streak: Streak;
+  task_completion_rate: number;
+  tier_breakdown: Record<Tier, TierStat>;
+  activity: ActivityPoint[];
+}
+
+export interface MatchTask {
+  id: number;
+  task_description: string;
+  status: string;
+}
+
+export interface Match {
+  match_id: string;
+  queue: string;
+  was_loss: boolean;
+  champion: string | null;
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
+  detected_at: string;
+  task: MatchTask | null;
+}
+
+export interface PityHistoryPoint {
+  pity: number;
+  recorded_at: string;
+}

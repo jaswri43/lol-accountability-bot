@@ -1,4 +1,13 @@
-import type { Me, StatusResponse, Task, TaskTemplate, Tier } from "./types";
+import type {
+  Match,
+  Me,
+  PityHistoryPoint,
+  StatsOverview,
+  StatusResponse,
+  Task,
+  TaskTemplate,
+  Tier,
+} from "./types";
 
 const BASE = "/api";
 
@@ -55,4 +64,7 @@ export const api = {
     }),
   deleteTemplate: (id: number) => apiFetch<void>(`/task-templates/${id}`, { method: "DELETE" }),
   logout: () => apiFetch<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  statsOverview: () => apiFetch<StatsOverview>("/stats/overview"),
+  matches: (limit = 10) => apiFetch<Match[]>(`/matches?limit=${limit}`),
+  pityHistory: (limit = 50) => apiFetch<PityHistoryPoint[]>(`/pity-history?limit=${limit}`),
 };

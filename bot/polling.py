@@ -17,7 +17,7 @@ from sqlalchemy import or_, select
 
 from accountability import pick_task_for_user
 from cosmetic import number_items, sort_by_tier_then_date
-from db import ProcessedMatch, Task, User, async_session
+from db import PityHistory, ProcessedMatch, Task, User, async_session
 from ranked import describe_change, format_rank, format_tier_rank
 from riot_api import (
     QUEUE_ID_LABELS,
@@ -33,6 +33,7 @@ from riot_api import (
     is_remake,
 )
 from severity import apply_loss_pity, apply_win_pity, has_opted_into_severity
+from stats import loss_streak_length, sort_matches_recent_first
 from tone import pick_color, pick_intro, pick_severity_color, pick_severity_intro
 from views import TaskCompletionView
 
@@ -224,17 +225,44 @@ async def _check_user(bot: discord.Client, channel_id: int, user: User) -> None:
 
             # type=ranked already excludes normals/ARAM/etc, but double-check
             # queueId so only Solo/Duo (420) and Flex (440) get flagged.
-            if match["info"]["queueId"] not in RANKED_QUEUE_IDS:
+            queue_id = match["info"]["queueId"]
+            if queue_id not in RANKED_QUEUE_IDS:
                 session.add(ProcessedMatch(match_id=match_id, discord_id=user.discord_id, was_loss=False))
                 continue
 
             was_loss = did_player_lose(match, user.riot_puuid)
-            session.add(ProcessedMatch(match_id=match_id, discord_id=user.discord_id, was_loss=was_loss))
+            participant = get_participant(match, user.riot_puuid)
+            # champion/KDA/queue_id captured here (not just for losses) so
+            # the match-history feed and per-queue win/loss record have a
+            # complete picture, not just loss-triggered games.
+            processed_match = ProcessedMatch(
+                match_id=match_id,
+                discord_id=user.discord_id,
+                was_loss=was_loss,
+                queue_id=queue_id,
+                champion=participant["championName"],
+                kills=participant["kills"],
+                deaths=participant["deaths"],
+                assists=participant["assists"],
+            )
+            session.add(processed_match)
 
             if was_loss:
-                await _assign_task(session, bot, channel_id, user, match_id, match)
+                await _assign_task(session, bot, channel_id, user, match_id, match, processed_match)
             else:
                 await _apply_win_pity(session, user, match)
+                # Losses already refresh solo/flex rank tracking (below, via
+                # _assign_task); wins need the same refresh so LP-trend data
+                # has a point for every ranked game, not just losses. Also
+                # posts a promotion/demotion announcement here if one
+                # happened, same as losses already do -- ranking up on a
+                # win is exactly when you'd expect to hear about it.
+                _, rank_announcement, lp_value = await _update_rank_tracking(session, user, queue_id)
+                processed_match.lp_after = lp_value
+                if rank_announcement is not None:
+                    channel = bot.get_channel(channel_id)
+                    if channel is not None:
+                        await channel.send(embed=rank_announcement)
 
         await session.commit()
 
@@ -247,55 +275,42 @@ async def _apply_win_pity(session, user: User, match: dict) -> None:
         return
     tracked_user = await session.get(User, user.discord_id)
     apply_win_pity(tracked_user)
-
-
-def _match_chronological_key(match_id: str) -> int:
-    """Riot match ids are '{platformId}_{gameId}'; gameId increases
-    monotonically per platform, giving a reliable recency ordering that
-    doesn't depend on the order matches happened to be fetched/inserted in
-    (which can vary when several new matches are found in one poll cycle)."""
-    return int(match_id.rsplit("_", 1)[1])
+    session.add(PityHistory(discord_id=user.discord_id, pity=tracked_user.pity))
 
 
 async def _get_current_loss_streak(session, discord_id: int) -> int:
     """How many of the user's most recent ranked games in a row were losses,
     stopping at the first win or the start of their recorded history."""
     result = await session.execute(select(ProcessedMatch).where(ProcessedMatch.discord_id == discord_id))
-    matches = sorted(
-        result.scalars().all(), key=lambda m: _match_chronological_key(m.match_id), reverse=True
-    )
-
-    streak = 0
-    for match in matches:
-        if not match.was_loss:
-            break
-        streak += 1
-    return streak
+    return loss_streak_length(sort_matches_recent_first(result.scalars().all()))
 
 
-async def _update_rank_tracking(session, user: User, queue_id: int) -> tuple[str | None, discord.Embed | None]:
+async def _update_rank_tracking(
+    session, user: User, queue_id: int
+) -> tuple[str | None, discord.Embed | None, int | None]:
     """Fetch current ranked stats, compute the LP change since the last
     stored snapshot for this queue, update the stored snapshot, and build a
     separate rank-change announcement embed if the tier/rank changed.
 
-    Returns (rank_field_text, rank_change_embed) -- either may be None:
-    rank_field_text is None if the user isn't ranked in this queue at all
-    (not placed yet); rank_change_embed is None unless a promotion/demotion
-    just happened.
+    Returns (rank_field_text, rank_change_embed, lp_value) -- all three may
+    be None: rank_field_text/lp_value are None if the user isn't ranked in
+    this queue at all (not placed yet); rank_change_embed is None unless a
+    promotion/demotion just happened. lp_value is the caller's to persist
+    (e.g. onto a ProcessedMatch.lp_after) for LP-trend purposes.
     """
     queue_type = QUEUE_ID_TO_QUEUE_TYPE.get(queue_id)
     if queue_type is None:
-        return None, None
+        return None, None, None
 
     try:
         stats = await get_ranked_stats(user.riot_puuid)
     except RiotAPIError as e:
         log.error(f"Failed to fetch ranked stats for {user.riot_game_name}#{user.riot_tag_line}: {e}")
-        return None, None
+        return None, None, None
 
     new_entry = stats.get(queue_type)
     if new_entry is None:
-        return None, None  # unranked/not placed in this queue -- nothing to track yet
+        return None, None, None  # unranked/not placed in this queue -- nothing to track yet
 
     # `user` may be a detached instance loaded by an earlier, already-closed
     # session; re-fetch through the active session so the mutations below
@@ -335,17 +350,27 @@ async def _update_rank_tracking(session, user: User, queue_id: int) -> tuple[str
             ),
             color=discord.Color.gold() if went_up else discord.Color.dark_grey(),
         )
-        return format_rank(new_entry), announcement
+        return format_rank(new_entry), announcement, new_entry["leaguePoints"]
 
     if lp_change is not None:
         sign = "+" if lp_change >= 0 else ""
-        return f"{format_tier_rank(new_entry)} ({new_entry['leaguePoints']} LP, {sign}{lp_change})", None
+        return (
+            f"{format_tier_rank(new_entry)} ({new_entry['leaguePoints']} LP, {sign}{lp_change})",
+            None,
+            new_entry["leaguePoints"],
+        )
 
-    return format_rank(new_entry), None
+    return format_rank(new_entry), None, new_entry["leaguePoints"]
 
 
 async def _assign_task(
-    session, bot: discord.Client, channel_id: int, user: User, match_id: str, match: dict
+    session,
+    bot: discord.Client,
+    channel_id: int,
+    user: User,
+    match_id: str,
+    match: dict,
+    processed_match: ProcessedMatch,
 ) -> None:
     opted_in = await has_opted_into_severity(session, user.discord_id)
     counted = opted_in and not is_remake(match, user.riot_puuid)
@@ -354,6 +379,7 @@ async def _assign_task(
     if counted:
         tracked_user = await session.get(User, user.discord_id)
         tier = apply_loss_pity(tracked_user)  # draws from pre-loss pity, then updates it in place
+        session.add(PityHistory(discord_id=user.discord_id, pity=tracked_user.pity))
 
     description, note = await pick_task_for_user(session, user.discord_id, tier=tier)
     # Stores the drawn severity tier (what the pity system decided this
@@ -370,6 +396,7 @@ async def _assign_task(
     )
     session.add(task)
     await session.flush()  # populate task.id (and let the streak query below see this match)
+    processed_match.task_id = task.id
 
     streak = await _get_current_loss_streak(session, user.discord_id)
 
@@ -384,7 +411,8 @@ async def _assign_task(
     champion = participant["championName"]
     queue_label = QUEUE_ID_LABELS.get(queue_id, "Ranked")
 
-    rank_field, rank_announcement = await _update_rank_tracking(session, user, queue_id)
+    rank_field, rank_announcement, lp_value = await _update_rank_tracking(session, user, queue_id)
+    processed_match.lp_after = lp_value
 
     if note == "no_templates":
         extra_note = "\n*(No custom tasks set for you yet -- use `/addtask` to customize this.)*"

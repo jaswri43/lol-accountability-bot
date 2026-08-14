@@ -4,7 +4,7 @@ import { TIER_CLASSES, TIER_LABEL } from "../lib/tier";
 export function TierBadge({ tier }: { tier: Tier | null }) {
   if (!tier) {
     return (
-      <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20">
+      <span className="inline-flex items-center rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-500 ring-1 ring-inset ring-zinc-400/20">
         Untagged
       </span>
     );

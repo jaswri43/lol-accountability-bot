@@ -1,5 +1,35 @@
 @import "tailwindcss";
 
+/* "Charcoal & Dusty Blue" -- see README's Phase 13 notes. Tailwind v4
+   auto-generates the full set of color utilities (bg, text, border, ring,
+   etc.) for every --color- token here, so e.g. --color-hero gives bg-hero,
+   text-hero, and so on. */
+@theme {
+  --color-page: #fafaf9;
+  --color-hairline: #e5e5e5;
+  --color-hero: #18181b;
+  --color-accent: #5b7fa6;
+  --color-accent-soft: #eaf0f5;
+  /* text-accent reads fine at large/bold sizes (big numbers, chart fills)
+     but is too light for small badge text on accent-soft -- use this
+     darker, more saturated variant there instead. */
+  --color-accent-strong: #2f5878;
+
+  /* Tier severity ramp: one hue (warm sand -> rust), tint/shade only --
+     deliberately not three unrelated colors, so it reads as "increasing
+     intensity" rather than a stoplight. */
+  --color-tier-low: #c9a876;
+  --color-tier-low-soft: #f6eee3;
+  --color-tier-low-text: #8a6b42;
+  --color-tier-medium: #a97845;
+  --color-tier-medium-soft: #efdec7;
+  --color-tier-medium-text: #7a5424;
+  --color-tier-high: #7a4f26;
+  --color-tier-high-soft: #e1c7a3;
+  --color-tier-high-text: #5c3d1a;
+}
+
 body {
-  @apply bg-slate-50 text-slate-800;
+  background-color: var(--color-page);
+  @apply font-light text-zinc-800 antialiased;
 }

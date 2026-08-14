@@ -50,6 +50,41 @@ class ProcessedMatch(Base):
     discord_id: Mapped[int] = mapped_column(ForeignKey("users.discord_id"), primary_key=True)
     was_loss: Mapped[bool] = mapped_column(Boolean)
     detected_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    # Everything below is populated only for ranked matches (queue_id in
+    # riot_api.RANKED_QUEUE_IDS), starting from when these columns were
+    # added -- NULL for older rows and for non-ranked matches (which only
+    # ever got a placeholder row here to avoid reprocessing them; their
+    # was_loss is meaningless, always False regardless of actual result).
+    # Never backfilled -- powers the match-history feed, per-queue win/loss
+    # record, and LP-trend sparkline, all of which are fine starting from
+    # "no data yet" and filling in as new games happen.
+    queue_id: Mapped[int | None] = mapped_column(nullable=True)
+    champion: Mapped[str | None] = mapped_column(nullable=True)
+    kills: Mapped[int | None] = mapped_column(nullable=True)
+    deaths: Mapped[int | None] = mapped_column(nullable=True)
+    assists: Mapped[int | None] = mapped_column(nullable=True)
+    # This player's league points for this match's queue, as of right after
+    # this match (i.e. the same fresh fetch _update_rank_tracking already
+    # does) -- the raw values a per-queue LP-trend sparkline plots.
+    lp_after: Mapped[int | None] = mapped_column(nullable=True)
+    # Set iff this match was a counted loss that got a task assigned --
+    # lets the match-history feed show "here's the task this game
+    # triggered" without guessing from descriptions/timestamps.
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+
+
+class PityHistory(Base):
+    """Append-only log of a user's pity value after each counted win/loss
+    (bot/severity.py's apply_loss_pity/apply_win_pity) -- users.pity only
+    ever holds the current value, so this is what a pity-over-time chart
+    reads from. Never mutated or deleted, only inserted."""
+
+    __tablename__ = "pity_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    discord_id: Mapped[int] = mapped_column(ForeignKey("users.discord_id"))
+    pity: Mapped[float] = mapped_column()
+    recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
 
 class Task(Base):
@@ -116,6 +151,15 @@ async def init_db() -> None:
         # once no NULL rows remain.
         await conn.execute(text("UPDATE task_templates SET tier = 'low' WHERE tier IS NULL"))
         await conn.execute(text("UPDATE tasks SET tier = 'low' WHERE tier IS NULL"))
+        await _add_column_if_missing(conn, "processed_matches", "queue_id", "INTEGER")
+        await _add_column_if_missing(conn, "processed_matches", "champion", "VARCHAR")
+        await _add_column_if_missing(conn, "processed_matches", "kills", "INTEGER")
+        await _add_column_if_missing(conn, "processed_matches", "deaths", "INTEGER")
+        await _add_column_if_missing(conn, "processed_matches", "assists", "INTEGER")
+        await _add_column_if_missing(conn, "processed_matches", "lp_after", "INTEGER")
+        await _add_column_if_missing(conn, "processed_matches", "task_id", "INTEGER")
+        # No backfill for any of the above -- see ProcessedMatch's docstring.
+        # pity_history is a brand new table; create_all already made it.
 
 
 async def _add_column_if_missing(conn, table: str, column: str, column_type: str) -> None:

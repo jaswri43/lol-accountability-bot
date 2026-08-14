@@ -9,6 +9,45 @@ assigns accountability tasks after a loss, completable via `/done` or the
 **Live**, running unattended on an Oracle Cloud VM under systemd (see
 Deployment below).
 
+Phase 13: dashboard stats + a full visual restyle ("Charcoal & Dusty
+Blue" -- see `web/src/index.css`'s `@theme` block for the palette).
+
+- New data, all additive/no-backfill (existing rows just have no history
+  until fresh games/scoring events happen): `processed_matches` gained
+  `queue_id`/`champion`/`kills`/`deaths`/`assists`/`lp_after`/`task_id`,
+  captured for every ranked match (not just losses) so LP-trend and
+  win/loss-by-queue have a data point per game; a new append-only
+  `pity_history` table logs the pity value after every counted win/loss.
+  `bot/stats.py` is the new pure-computation module (streak, win/loss
+  record, task completion rate, tier breakdown, day-bucketed activity) --
+  `bot/polling.py`'s old loss-streak logic now builds on it instead of
+  duplicating it.
+- Three new API endpoints (`GET /stats/overview`, `GET /matches`, `GET
+  /pity-history`), all scoped to the caller like everything else. Rank
+  tracking now runs on wins too, not just losses (previously only
+  `_assign_task` called it) -- needed for LP-trend to have a point per
+  game, and it means promotions/demotions now get announced after a win
+  the same way they already did after a loss.
+- Dashboard gained: rank/LP per queue with a trend sparkline, win/loss
+  record (overall and per-queue), current streak, task completion rate,
+  a tier breakdown with progress bars, a tasks-completed-over-time bar
+  chart, a recent-matches feed (with the task a loss triggered, if any),
+  and a pity-over-time line chart. The pity/odds card is the one dark
+  "hero" card -- everything else is a white card on the page's warm-gray
+  background.
+- Restyle applied across every view (nav, Dashboard, History, Templates,
+  forms, badges, charts) -- tier colors are now a tint/shade ramp of one
+  hue instead of red/amber/green.
+- Caught two real bugs by actually looking at the running app (Playwright
+  screenshots, not just code review): `text-accent` on `bg-accent-soft`
+  badges (e.g. History's "Done" pill) was nearly unreadable at small
+  size -- fixed with a separate darker `--color-accent-strong` for that
+  case. And `Templates.tsx`/`Dashboard.tsx`'s optimistic local-state
+  updates after create/delete/complete didn't re-sort, so cosmetic
+  numbers could show duplicates or go stale until a manual refresh --
+  fixed by re-fetching from the server after each of those actions
+  instead of hand-patching local state.
+
 Phase 12: cosmetic task/task-template numbering. The real database `id`
 (autoincrementing, never reused) still drives everything internally --
 foreign keys, button `custom_id`s, `POST /tasks/{id}/complete`, `DELETE
@@ -402,29 +441,31 @@ Updating the API or frontend follows the same `git pull`-based flow:
 lol-accountability-bot/
 ├── bot/
 │   ├── main.py            # entry point, bot setup, all slash commands, persistent-view registration
-│   ├── db.py               # SQLAlchemy models (users incl. pity/severity_mode, processed_matches, tasks, task_templates incl. tier) + init_db(), complete_task()
+│   ├── db.py               # SQLAlchemy models (users, processed_matches incl. per-match LP/champion/KDA, tasks incl. tier, task_templates, pity_history) + init_db(), complete_task()
 │   ├── riot_api.py         # thin async Riot API client (americas region + na1 platform routing)
 │   ├── polling.py          # background loops: match-polling (losses -> tasks, rank tracking) and task reminders
 │   ├── ranked.py            # tier/rank comparison + formatting (LP delta, promotion/demotion detection)
 │   ├── views.py             # persistent Mark Done button (TaskCompletionView)
 │   ├── accountability.py   # picks a task per-user from task_templates (tier-aware), with a fallback default
 │   ├── severity.py          # pity-based severity odds/tier-draw logic for /severity mode
+│   ├── stats.py              # pure stat computations: streak, win/loss record, completion rate, tier breakdown, activity buckets
 │   ├── tone.py              # picks loss-message wording/embed color from losing-streak length or severity tier
 │   └── logs/                # rotating log files, created on first run (gitignored)
 ├── api/
 │   ├── main.py             # entry point, FastAPI app, CORS, routers, lifespan (init_db)
-│   ├── bot_bridge.py        # puts bot/ on sys.path and re-exports its db/severity/accountability code -- nothing duplicated
+│   ├── bot_bridge.py        # puts bot/ on sys.path and re-exports its db/severity/accountability/stats code -- nothing duplicated
 │   ├── auth.py              # Discord OAuth2 login/callback + JWT issuing/validation (get_current_user dependency)
-│   ├── routes.py            # /tasks, /task-templates, /status, /me endpoints, all scoped to the caller's own discord_id
+│   ├── routes.py            # /tasks, /task-templates, /status, /me, /stats/overview, /matches, /pity-history -- all scoped to the caller
 │   ├── schemas.py           # Pydantic request/response models
 │   └── logs/                 # rotating log files, created on first run (gitignored)
 ├── web/
 │   ├── src/
 │   │   ├── api/               # client.ts (fetch wrapper + endpoint calls) + types.ts (mirrors api/schemas.py)
 │   │   ├── context/            # AuthContext.tsx -- calls GET /me on mount, gates the whole app
-│   │   ├── components/         # Layout.tsx (nav), OddsChart.tsx (Recharts), TierBadge.tsx
+│   │   ├── components/         # Layout.tsx (nav), HeroOddsCard/OddsChart, RankCard, StatTile, TierBreakdownCard, ActivityChart, MatchHistoryFeed, PityHistoryChart, Sparkline, TierBadge
 │   │   ├── pages/               # Login.tsx, Dashboard.tsx, History.tsx, Templates.tsx
 │   │   ├── lib/tier.ts          # tier labels/colors + UTC-safe date formatting
+│   │   ├── index.css            # Tailwind v4 @theme block -- the "Charcoal & Dusty Blue" palette tokens
 │   │   └── App.tsx              # auth gate + react-router routes
 │   ├── vite.config.ts        # dev-server proxy: /api/* -> localhost:8001, prefix stripped
 │   └── dist/                 # npm run build output -- what nginx serves in prod (gitignored)

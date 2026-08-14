@@ -17,6 +17,8 @@ if str(_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(_BOT_DIR))
 
 from db import (
+    PityHistory,
+    ProcessedMatch,
     Task,
     TaskTemplate,
     User,
@@ -27,8 +29,21 @@ from db import (
 from severity import compute_odds, has_opted_into_severity
 from accountability import DEFAULT_TASK_DESCRIPTION
 from cosmetic import number_items, resolve_cosmetic_number, sort_by_tier_then_date
+from ranked import format_rank, format_tier_rank
+from riot_api import QUEUE_ID_LABELS, RANKED_FLEX_QUEUE_ID, RANKED_QUEUE_IDS, RANKED_SOLO_QUEUE_ID
+from stats import (
+    current_streak,
+    loss_streak_length,
+    sort_matches_recent_first,
+    task_completion_rate,
+    tasks_completed_by_day,
+    tier_breakdown,
+    win_loss_record,
+)
 
 __all__ = [
+    "PityHistory",
+    "ProcessedMatch",
     "Task",
     "TaskTemplate",
     "User",
@@ -41,4 +56,17 @@ __all__ = [
     "number_items",
     "resolve_cosmetic_number",
     "sort_by_tier_then_date",
+    "format_rank",
+    "format_tier_rank",
+    "QUEUE_ID_LABELS",
+    "RANKED_FLEX_QUEUE_ID",
+    "RANKED_QUEUE_IDS",
+    "RANKED_SOLO_QUEUE_ID",
+    "current_streak",
+    "loss_streak_length",
+    "sort_matches_recent_first",
+    "task_completion_rate",
+    "tasks_completed_by_day",
+    "tier_breakdown",
+    "win_loss_record",
 ]
